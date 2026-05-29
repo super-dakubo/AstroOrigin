@@ -4,6 +4,16 @@ use crate::error::TauriResult;
 use crate::game::GameKind;
 use anyhow::Context;
 
+/// 星穹铁道常见角色/光锥名（OCR 模糊匹配修正用）
+const STARRAIL_NAMES: &[&str] = &[
+    "轮契", "齐颂", "蕃息", "嘉果", "素裳", "三月七", "丹恒", "希露瓦",
+    "黑塔", "阿兰", "艾丝妲", "青雀", "停云", "驭空", "佩拉", "卢卡",
+    "米沙", "雪衣", "寒鸦", "加拉赫",
+    "希儿", "景元", "刃", "卡芙卡", "银狼", "罗刹",
+    "布洛妮娅", "杰帕德", "克拉拉", "彦卿", "白露", "姬子", "瓦尔特",
+    "虎克", "娜塔莎", "桑博", "桂乃芬",
+];
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GachaRecord {
@@ -157,186 +167,175 @@ pub async fn import_gacha_screenshot(
     let pool = pool.inner().clone();
     let game_kind_clone = game_kind.clone();
 
-    let result = tokio::task::spawn_blocking(move || {
+    tokio::task::spawn_blocking(move || {
         let conn = pool.get().map_err(|e| format!("DB error: {}", e))?;
 
-        // 1) OCR 全图，拿到文字 + 坐标
-        let words = crate::ocr::ocr_image(&img_bytes)
+        // 获取图片尺寸
+        let (orig_w, h) = match image::load_from_memory(&img_bytes) {
+            Ok(img) => (img.width() as f64, img.height() as f64),
+            Err(_) => (1920.0, 1080.0),
+        };
+
+        // ── 1. OCR 全图 ──
+        let all_words = crate::ocr::ocr_image(&img_bytes)
             .map_err(|e| format!("OCR failed: {}", e))?;
+        eprintln!("[WARP] {} raw words", all_words.len());
 
-        eprintln!("[IMPORT] OCR returned {} words", words.len());
+        // ── 2. 过滤：去除上下 15% 的文字 ──
+        let top = h * 0.15;
+        let bot = h * 0.85;
+        let words: Vec<_> = all_words.into_iter()
+            .filter(|w| (w.y + w.height / 2.0) > top && (w.y + w.height / 2.0) < bot)
+            .collect();
+        eprintln!("[WARP] {} words after Y filter [{:.0},{:.0}]", words.len(), top, bot);
 
-        // 2) 按 Y 坐标分组 → 恢复行顺序（OCR 本身已从左到右、从上到下读）
-        // 同一行内 Y 坐标差不超过 15px（容差）
+        // ── 3. 行聚类，Y 中心 30px 容差 ──
         let mut rows: Vec<Vec<crate::ocr::OcrWord>> = Vec::new();
-        let row_tolerance = 15.0;
         'outer: for word in words {
-            let y_center = word.y + word.height / 2.0;
-            for row in rows.iter_mut() {
-                if let Some(first) = row.first() {
-                    let row_y = first.y + first.height / 2.0;
-                    if (y_center - row_y).abs() < row_tolerance {
-                        row.push(word);
-                        continue 'outer;
-                    }
-                }
+            let cy = word.y + word.height / 2.0;
+            for r in rows.iter_mut() {
+                let ry = r[0].y + r[0].height / 2.0;
+                if (cy - ry).abs() < 30.0 { r.push(word); continue 'outer; }
             }
             rows.push(vec![word]);
         }
-
         // 每行按 X 排序
-        for row in rows.iter_mut() {
-            row.sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal));
-        }
-
-        // 合成行文本用于展示
-        let row_texts: Vec<String> = rows.iter().map(|row| {
-            let text: String = row.iter().map(|w| w.text.trim()).collect();
-            text.chars().filter(|c| !c.is_whitespace()).collect::<String>()
-        }).filter(|t: &String| !t.is_empty()).collect();
-
-        eprintln!("[IMPORT] Grouped into {} rows:", row_texts.len());
-        for (i, t) in row_texts.iter().enumerate() {
+        for r in rows.iter_mut() { r.sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal)); }
+        eprintln!("[WARP] {} rows after clustering", rows.len());
+        for (i, r) in rows.iter().enumerate() {
+            let t: String = r.iter().map(|w| w.text.trim()).collect::<Vec<_>>().join(" ");
             eprintln!("  Row {}: {:?}", i, t);
         }
 
-        // 3) 标题检测
-        let has_title = row_texts.iter().any(|line: &String| {
-            features.title_keywords.iter().any(|kw: &&str| line.contains(kw))
-        });
-        if !has_title {
-            return Err("截图不是抽卡记录页面，请确认截图包含标题".to_string());
-        }
-        eprintln!("[IMPORT] Title detected!");
-
-        // 4) 找表头行，从拼合文本中定位各列名的起始 X
-        let header_row = rows.iter().find(|row| {
-            let text: String = row.iter().map(|w| w.text.trim()).collect();
-            text.contains("对象类型")
+        // ── 4. 找表头行 ──
+        let header_idx = rows.iter().position(|r| {
+            let txt: String = r.iter().map(|w| w.text.trim()).collect();
+            txt.contains("对象类型") && txt.contains("跃迁时间")
         });
 
-        let col_boundaries: Vec<f64> = match header_row {
-            Some(row) => {
-                let header_labels = ["对象类型", "对象名称", "跃迁类型", "跃迁时间"];
-                // 拼合表头文本，记录每个字来自哪个 word 的 X
-                let concat: Vec<(f64, char)> = row.iter()
-                    .flat_map(|w| w.text.chars().map(move |c| (w.x, c)))
-                    .filter(|(_, c)| !c.is_whitespace())
-                    .collect();
-                let full_text: String = concat.iter().map(|(_, c)| c).collect();
-
-                let mut boundaries: Vec<f64> = header_labels.iter().filter_map(|label| {
-                    full_text.find(label).map(|pos| {
-                        // 找到位置 pos 对应的 word 的 X
-                        concat.get(pos).map(|(x, _)| *x).unwrap_or(f64::MAX)
-                    })
-                }).collect();
-                boundaries.push(f64::MAX);
-                boundaries
-            },
-            None => return Err("未找到表头行，无法解析".to_string()),
-        };
-
-        eprintln!("[IMPORT] Column boundaries: {:?}", col_boundaries);
-        if col_boundaries.len() < 5 {
-            return Err("表头列数不足，无法解析".to_string());
-        }
-
-        // 5) 用列边界拆分数据行
-        let mut data_rows: Vec<Vec<String>> = Vec::new();
-        for row in rows.iter() {
-            let text: String = row.iter().map(|w| w.text.trim()).collect();
-            let clean: String = text.chars().filter(|c| !c.is_whitespace()).collect();
-            // 跳过非数据行
-            if clean.contains("历史记录") || clean.contains("可在本页面")
-                || clean.contains("对象类型") || clean.is_empty()
-                || clean == "0" || clean == "00" || clean == "1"
-            {
-                continue;
-            }
-
-            // 将行中的每个词分配到列
-            let mut cells: Vec<String> = vec![String::new(); col_boundaries.len() - 1];
-            for word in row.iter() {
-                let col_idx = col_boundaries.iter()
-                    .position(|b| word.x < *b)
-                    .unwrap_or(col_boundaries.len() - 1);
-                if col_idx < cells.len() {
-                    if !cells[col_idx].is_empty() { cells[col_idx].push(' '); }
-                    cells[col_idx].push_str(word.text.trim());
+        let col_bounds: Vec<f64> = if let Some(hi) = header_idx {
+            let row = &rows[hi];
+            // 取所有词的 X 坐标
+            let xs: Vec<f64> = row.iter().map(|w| w.x).collect();
+            // 计算词间间隙（下一个词x - 当前词x+width）
+            let mut gaps: Vec<(usize, f64)> = row.windows(2).enumerate().map(|(i, pair)| {
+                let gap = pair[1].x - (pair[0].x + pair[0].width);
+                (i, gap)
+            }).filter(|(_, g)| *g > 0.0).collect();
+            gaps.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+            // 取最大的3个间隙作为列边界
+            let split_indices: Vec<usize> = gaps.iter().take(3).map(|(i, _)| *i).collect();
+            let mut boundaries: Vec<f64> = vec![0.0];
+            for &si in split_indices.iter() {
+                if si < row.len() - 1 {
+                    let b = (row[si].x + row[si].width + row[si + 1].x) / 2.0;
+                    boundaries.push(b);
                 }
             }
-            // 清理空格
-            let cells: Vec<String> = cells.into_iter()
-                .map(|c| c.chars().filter(|ch| !ch.is_whitespace()).collect())
+            boundaries.push(f64::MAX);
+            boundaries
+        } else {
+            // 回退：硬编码列宽（基于 1920×1080 比例缩放）
+            eprintln!("[WARP] Header not found, using fallback column widths");
+            let scale = orig_w / 1920.0;
+            vec![0.0, 140.0 * scale, 360.0 * scale, 540.0 * scale, f64::MAX]
+        };
+        eprintln!("[WARP] Column boundaries: {:?}", col_bounds);
+
+        // ── 5. 遍历数据行，按 X 中心点分列 ──
+        let skip_keywords = ["历史记录", "可在本页面", "对象类型", "跃迁记录", "跃迁", "当前为"];
+        let mut parsed: Vec<Vec<String>> = Vec::new();
+        for (ri, row) in rows.iter().enumerate() {
+            if header_idx.is_some() && ri == header_idx.unwrap() { continue; }
+            let txt: String = row.iter().map(|w| w.text.trim()).collect();
+            if skip_keywords.iter().any(|k| txt.contains(k)) { continue; }
+            if txt.trim().is_empty() || txt.len() <= 2 { continue; }
+
+            let mut cells: Vec<Vec<String>> = (0..4).map(|_| Vec::new()).collect();
+            for word in row {
+                let cx = word.x + word.width / 2.0;
+                let mut ci = 0usize;
+                for bi in 0..col_bounds.len() - 1 {
+                    if cx >= col_bounds[bi] && cx < col_bounds[bi + 1] { ci = bi; break; }
+                }
+                if ci < 4 { cells[ci].push(word.text.trim().to_string()); }
+            }
+            let merged: Vec<String> = cells.into_iter()
+                .map(|c| c.join("").chars().filter(|ch| !ch.is_whitespace()).collect())
                 .collect();
-            data_rows.push(cells);
+            if merged.len() != 4 || merged.iter().any(|c| c.is_empty()) { continue; }
+            parsed.push(merged);
+        }
+        eprintln!("[WARP] {} parsed rows", parsed.len());
+        for (i, r) in parsed.iter().enumerate() {
+            eprintln!("  Row {}: {:?}", i, r);
         }
 
-        eprintln!("[IMPORT] Parsed {} data rows:", data_rows.len());
-        for (i, row) in data_rows.iter().enumerate() {
-            eprintln!("  Row {}: {:?}", i, row);
+        // ── 6. 后处理 & 入库 ──
+        fn normalize_date(s: &str) -> String {
+            let s = s.replace('·', "-").replace('：', ":");
+            if let Some(pos) = s.find(':') {
+                if pos >= 3 {
+                    let (d, t) = s.split_at(pos - 2);
+                    return format!("{} {}", d.trim(), t.trim());
+                }
+            }
+            s
         }
 
-        if data_rows.is_empty() {
-            return Err("无法解析表格数据".to_string());
+        fn fuzzy_match_name(ocr: &str) -> String {
+            let ocr_clean: Vec<char> = ocr.chars().filter(|&c| !c.is_whitespace() && c != '·' && c != '-' && c != ':' && c != '：').collect();
+            if ocr_clean.is_empty() { return ocr.to_string(); }
+            // 在已知列表中找最长公共子串匹配
+            let mut best = ocr.to_string();
+            let mut best_len = 0usize;
+            for &known in STARRAIL_NAMES {
+                // 简单前缀/包含匹配
+                if ocr.contains(known) || known.contains(&ocr_clean.iter().collect::<String>().as_str()) {
+                    if known.len() > best_len { best = known.to_string(); best_len = known.len(); }
+                }
+            }
+            best
         }
 
-        // 6) 组装记录
         let mut imported = 0usize;
         let mut duplicates = 0usize;
         let kind_str = &game_kind_clone;
 
-        for cells in &data_rows {
-            if cells.len() < 4 { continue; }
+        for cells in &parsed {
             let obj_type = cells[0].trim();
-            let item_name_raw = cells[1].trim();
-            let date_raw = cells[3].trim();
+            let mut item_name = fuzzy_match_name(cells[1].trim());
+            let date_raw = &cells[3];
+            let record_date = normalize_date(date_raw);
 
-            let item_name = crate::ocr::normalize_item_name(item_name_raw, features.name_normalizations);
+            // 类型校验
+            if obj_type != "角色" && obj_type != "光锥" { continue; }
+            // 时间校验
+            let date_ok = record_date.len() == 19
+                && record_date.chars().nth(4) == Some('-')
+                && record_date.chars().nth(7) == Some('-');
+            if !date_ok { continue; }
 
-            // 安全解析日期（不用字节切片，避免中文 UTF-8 边界问题）
-            let record_date = date_raw
-                .replace('·', "-").replace('：', ":")
-                .chars().filter(|c| !c.is_whitespace()).collect::<String>();
-            // 在时间部分前加空格
-            let record_date = if let Some(pos) = record_date.find(':') {
-                if pos >= 3 {
-                    let (date_part, time_part) = record_date.split_at(pos - 2);
-                    format!("{} {}", date_part.trim(), time_part.trim())
-                } else {
-                    record_date.clone()
-                }
-            } else {
-                record_date
-            };
+            let star_rating = if obj_type == "角色" { 4 } else { 3 };
+            // 如果名称能在星铁列表中直接查到，使用字典星级
+            if STARRAIL_NAMES.contains(&item_name.as_str()) {
+                // 常见 4★ 角色 / 3★ 光锥 保持默认
+            }
 
-            let star_rating = if obj_type == "角色" {
-                4  // 默认 4★，5★会在手动确认
-            } else if ["轮契", "齐颂", "蕃息", "嘉果"].contains(&item_name.as_str()) {
-                3
-            } else {
-                4
-            };
+            // 去重
+            let exists: bool = conn.query_row(
+                "SELECT COUNT(*) > 0 FROM gacha_records
+                 WHERE game_kind = ? AND item_name = ? AND record_date = ? AND star_rating = ?",
+                rusqlite::params![kind_str, &item_name, &record_date, star_rating],
+                |row| row.get(0),
+            ).unwrap_or(false);
 
-            let exists: bool = conn
-                .query_row(
-                    "SELECT COUNT(*) > 0 FROM gacha_records
-                     WHERE game_kind = ? AND item_name = ? AND record_date = ? AND star_rating = ?",
-                    rusqlite::params![kind_str, &item_name, &record_date, star_rating],
-                    |row| row.get(0),
-                )
-                .unwrap_or(false);
-
-            if exists {
-                duplicates += 1;
-            } else {
+            if exists { duplicates += 1; } else {
                 conn.execute(
                     "INSERT INTO gacha_records (game_kind, item_name, star_rating, record_date, is_won)
                      VALUES (?, ?, ?, ?, ?)",
                     rusqlite::params![kind_str, &item_name, star_rating, &record_date, star_rating < 5],
-                )
-                .map_err(|e| format!("Insert error: {}", e))?;
+                ).map_err(|e| format!("Insert error: {}", e))?;
                 imported += 1;
                 eprintln!("[IMPORT]   Imported: {} ({}★, {} | {})", item_name, star_rating, obj_type, record_date);
             }
@@ -345,9 +344,8 @@ pub async fn import_gacha_screenshot(
         Ok(GachaImportResult { imported, duplicates })
     })
     .await
-    .map_err(|e| format!("Task join error: {}", e))?;
-
-    result
+    .map_err(|e| format!("Task join error: {}", e))
+    .and_then(|inner| inner)
 }
 
 #[tauri::command]

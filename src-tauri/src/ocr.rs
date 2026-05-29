@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use image::GenericImageView;
 use std::io::Write;
 
