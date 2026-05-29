@@ -166,58 +166,43 @@ pub async fn import_gacha_screenshot(
         let conn = pool.get().map_err(|e| format!("DB error: {}", e))?;
 
         // 获取图片尺寸
-        let h = match image::load_from_memory(&img_bytes) {
-            Ok(img) => img.height() as f64,
-            Err(_) => 1080.0,
-        };
-
         // ── 1. OCR 全图 ──
         let all_words = crate::ocr::ocr_image(&img_bytes)
             .map_err(|e| format!("OCR failed: {}", e))?;
         eprintln!("[WARP] {} raw words", all_words.len());
 
-        // ── 2. 过滤：去除上下 15% 的文字 ──
-        let top = h * 0.15;
-        let bot = h * 0.85;
-        let words: Vec<_> = all_words.into_iter()
-            .filter(|w| (w.y + w.height / 2.0) > top && (w.y + w.height / 2.0) < bot)
-            .collect();
-        eprintln!("[WARP] {} words after Y filter [{:.0},{:.0}]", words.len(), top, bot);
-
-        // ── 3. Y 聚类 → 分出行 ──
-        let mut y_vals: Vec<f64> = words.iter().map(|w| w.y + w.height / 2.0).collect();
+        // ── 2. Y 聚类 → 分出所有行 ──
+        let mut y_vals: Vec<f64> = all_words.iter().map(|w| w.y + w.height / 2.0).collect();
         y_vals.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        let mut y_rows: Vec<Vec<f64>> = Vec::new();
+        let mut y_clusters: Vec<Vec<f64>> = Vec::new();
         for yv in y_vals {
             let mut placed = false;
-            for r in y_rows.iter_mut() {
-                if (yv - r[0]).abs() < 25.0 { r.push(yv); placed = true; break; }
+            for cl in y_clusters.iter_mut() {
+                if (yv - cl[0]).abs() < 25.0 { cl.push(yv); placed = true; break; }
             }
-            if !placed { y_rows.push(vec![yv]); }
+            if !placed { y_clusters.push(vec![yv]); }
         }
-        let mut row_centers: Vec<f64> = y_rows.iter().map(|r| r.iter().sum::<f64>() / r.len() as f64).collect();
+        let mut row_centers: Vec<f64> = y_clusters.iter()
+            .map(|cl| cl.iter().sum::<f64>() / cl.len() as f64)
+            .collect();
         row_centers.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        eprintln!("[WARP] {} rows", row_centers.len());
+        eprintln!("[WARP] {} rows: {:?}", row_centers.len(), row_centers);
 
-        // ── 4. 对每行，用 X 间距切分列 ──
+        // ── 3. 对每行按 X 间隙分列，只取恰好 4 列的行 ──
         let half_span = if row_centers.len() > 1 { (row_centers[1] - row_centers[0]) / 2.0 } else { 30.0 };
-        let skip_keywords = ["历史记录", "可在本页面", "当前为", "查看详情"];
-        let mut parsed: Vec<Vec<String>> = Vec::new();
+        let mut table_rows: Vec<Vec<String>> = Vec::new();
 
         for ry in &row_centers {
-            // 取 Y 在此范围内的词
-            let mut rw: Vec<&crate::ocr::OcrWord> = words.iter()
+            // 收集 Y 在此行的词
+            let mut rw: Vec<&crate::ocr::OcrWord> = all_words.iter()
                 .filter(|w| (w.y + w.height / 2.0 - ry).abs() < half_span)
                 .collect();
             rw.sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal));
+            if rw.is_empty() { continue; }
 
-            let txt: String = rw.iter().map(|w| w.text.trim()).collect::<Vec<_>>().join("");
-            if skip_keywords.iter().any(|k| txt.contains(k)) || txt.trim().len() < 4 { continue; }
-
-            // 同一行内，词间 gap > 30px 视为列分隔
-            let mut cells: Vec<Vec<String>> = vec![vec![]];
+            // 用 X 间隙切分列
+            let mut cells: Vec<Vec<String>> = vec![vec![rw[0].text.trim().to_string()]];
             let mut prev_right = rw[0].x + rw[0].width;
-            cells[0].push(rw[0].text.trim().to_string());
             for w in rw.iter().skip(1) {
                 if w.x - prev_right > 30.0 {
                     cells.push(vec![w.text.trim().to_string()]);
@@ -226,22 +211,41 @@ pub async fn import_gacha_screenshot(
                 }
                 prev_right = w.x + w.width;
             }
-            let merged: Vec<String> = cells.into_iter()
+            let merged: Vec<String> = cells.iter()
                 .map(|c| c.join("").chars().filter(|ch| !ch.is_whitespace()).collect())
                 .collect();
-            if merged.len() == 4 { parsed.push(merged); }
+            if merged.len() == 4 {
+                table_rows.push(merged);
+            }
         }
-        eprintln!("[WARP] {} parsed rows", parsed.len());
-        for (i, r) in parsed.iter().enumerate() {
+        eprintln!("[WARP] {} rows split into 4 columns", table_rows.len());
+        for (i, r) in table_rows.iter().enumerate() {
             eprintln!("  Row {}: {:?}", i, r);
         }
 
-        // ── 6. 后处理 & 入库 ──
+        // ── 4. 表格 = 6 行（1 表头 + 5 数据） ──
+        // 表头特征：包含"对象类型"等词
+        let header_idx = table_rows.iter().position(|r| {
+            r[0].contains("对象类型") || r[0].contains("对象") && r[1].contains("名称")
+        });
+
+        let data_rows = if let Some(h) = header_idx {
+            if h + 5 < table_rows.len() {
+                &table_rows[h + 1 ..= h + 5]
+            } else {
+                &table_rows[h + 1 ..]
+            }
+        } else {
+            &table_rows[..]
+        };
+        eprintln!("[WARP] Using {} data rows (header at {:?})", data_rows.len(), header_idx);
+
+        // ── 5. 去重入库 ──
         let mut imported = 0usize;
         let mut duplicates = 0usize;
         let kind_str = &game_kind_clone;
 
-        for cells in &parsed {
+        for cells in data_rows {
             let obj_type = cells[0].trim();
             let mut item_name = fuzzy_match_name(cells[1].trim());
             let date_raw = &cells[3];
