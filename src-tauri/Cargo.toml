@@ -25,7 +25,7 @@ r2d2 = "0.8"
 r2d2_sqlite = "0.25"
 anyhow = "1"
 chrono = "0.4"
-image = "0.25"
+image = { version = "0.25", default-features = false, features = ["png"] }
 sysinfo = "0.33"
 windows = { version = "0.58", features = [
     "Foundation_Collections",
@@ -43,5 +43,5 @@ tauri-build = { version = "2", features = [] }
 
 [profile.release]
 strip = true
-lto = true
-codegen-units = 1
+lto = "thin"
+codegen-units = 16
