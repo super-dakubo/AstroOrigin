@@ -5,60 +5,51 @@ use std::io::Write;
 /// 使用 Windows.Media.Ocr API
 /// 注意：先存临时文件再让 WinRT 读取，避免流所有权问题
 pub fn ocr_image(image_data: &[u8]) -> Result<Vec<String>> {
-    // 使用 image 库加载图片
-    let img = image::load_from_memory(image_data)
-        .context("Failed to decode image for OCR")?;
+    eprintln!("[OCR] Step 1: loading image from memory ({} bytes)", image_data.len());
+    let img = image::load_from_memory(image_data)?;
 
-    // 编码为 PNG 格式供 Windows OCR 使用
+    eprintln!("[OCR] Step 2: encoding to PNG ({}x{})", img.width(), img.height());
     let mut png_buf = std::io::Cursor::new(Vec::new());
-    img.write_to(&mut png_buf, image::ImageFormat::Png)
-        .context("Failed to encode image as PNG")?;
+    img.write_to(&mut png_buf, image::ImageFormat::Png)?;
     let png_bytes = png_buf.into_inner();
 
-    // 写入临时文件（WinRT 从文件解码更稳定，避免 InMemoryRandomAccessStream 的 RO_E_CLOSED）
     let temp_dir = std::env::temp_dir();
     let temp_path = temp_dir.join(format!("astrorigin_ocr_{}.png", std::process::id()));
-    let mut file = std::fs::File::create(&temp_path)
-        .context("Failed to create temp file for OCR")?;
-    file.write_all(&png_bytes)
-        .context("Failed to write temp file for OCR")?;
+    eprintln!("[OCR] Step 3: writing temp file {:?}", temp_path);
+    let mut file = std::fs::File::create(&temp_path)?;
+    file.write_all(&png_bytes)?;
     file.flush()?;
+    drop(file);
 
-    // 用 WinRT API 打开临时文件
-    let path_str = temp_path.to_str().context("Invalid temp path")?;
+    let path_str = temp_path.to_str().ok_or_else(|| anyhow::anyhow!("Invalid temp path"))?;
+    eprintln!("[OCR] Step 4: StorageFile::GetFileFromPathAsync");
     let file = windows::Storage::StorageFile::GetFileFromPathAsync(
         &windows::core::HSTRING::from(path_str),
-    )?
-    .get()
-    .context("Failed to open temp file")?;
+    )?.get()?;
 
-    let stream = file.OpenAsync(windows::Storage::FileAccessMode::Read)?
-        .get()
-        .context("Failed to open file stream")?;
+    eprintln!("[OCR] Step 5: file.OpenAsync(Read)");
+    let stream = file.OpenAsync(windows::Storage::FileAccessMode::Read)?.get()?;
 
-    // 获取 OCR 引擎（中文简体）
+    eprintln!("[OCR] Step 6: Language::CreateLanguage(zh-CN)");
     let language =
         windows::Globalization::Language::CreateLanguage(&windows::core::HSTRING::from("zh-CN"))?;
-    let engine = windows::Media::Ocr::OcrEngine::TryCreateFromLanguage(&language)
-        .context("Failed to create OCR engine for zh-CN")?;
 
-    // 解码图片为 SoftwareBitmap
-    let decoder = windows::Graphics::Imaging::BitmapDecoder::CreateAsync(&stream)?
-        .get()
-        .context("Failed to create bitmap decoder")?;
-    let frame = decoder.GetFrameAsync(0)?.get()
-        .context("Failed to get frame")?;
-    let bitmap = frame.GetSoftwareBitmapAsync()?.get()
-        .context("Failed to get software bitmap")?;
+    eprintln!("[OCR] Step 7: OcrEngine::TryCreateFromLanguage");
+    let engine = windows::Media::Ocr::OcrEngine::TryCreateFromLanguage(&language)?;
 
-    // 执行 OCR
-    let result = engine.RecognizeAsync(&bitmap)?.get()
-        .context("OCR recognition failed")?;
+    eprintln!("[OCR] Step 8: BitmapDecoder::CreateAsync");
+    let decoder = windows::Graphics::Imaging::BitmapDecoder::CreateAsync(&stream)?.get()?;
 
-    // 清理临时文件
-    let _ = std::fs::remove_file(&temp_path);
+    eprintln!("[OCR] Step 9: decoder.GetFrameAsync(0)");
+    let frame = decoder.GetFrameAsync(0)?.get()?;
 
-    // 提取文本行
+    eprintln!("[OCR] Step 10: frame.GetSoftwareBitmapAsync");
+    let bitmap = frame.GetSoftwareBitmapAsync()?.get()?;
+
+    eprintln!("[OCR] Step 11: engine.RecognizeAsync");
+    let result = engine.RecognizeAsync(&bitmap)?.get()?;
+
+    eprintln!("[OCR] Step 12: extracting text lines");
     use windows::Media::Ocr::OcrLine;
 
     let lines: Vec<String> = result
@@ -68,6 +59,8 @@ pub fn ocr_image(image_data: &[u8]) -> Result<Vec<String>> {
         .map(|h| h.to_string())
         .collect();
 
+    let _ = std::fs::remove_file(&temp_path);
+    eprintln!("[OCR] Done: {} lines extracted", lines.len());
     Ok(lines)
 }
 
