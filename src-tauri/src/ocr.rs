@@ -68,8 +68,17 @@ pub fn ocr_image(image_data: &[u8]) -> Result<Vec<String>> {
         .map(|h| h.to_string())
         .collect();
 
-    let _ = std::fs::remove_file(&temp_path);
     eprintln!("[OCR] Done: {} lines extracted", lines.len());
+
+    // 如果 0 行，把临时文件保留供排查
+    if lines.is_empty() {
+        let debug_path = temp_dir.join("astrorigin_ocr_debug.png");
+        let _ = std::fs::copy(&temp_path, &debug_path);
+        eprintln!("[OCR] DEBUG: saved cropped image to {:?} (open and check if text is visible)", debug_path);
+        let _ = std::fs::remove_file(&temp_path);
+    } else {
+        let _ = std::fs::remove_file(&temp_path);
+    }
     Ok(lines)
 }
 
