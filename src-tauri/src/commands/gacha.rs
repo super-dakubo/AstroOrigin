@@ -171,7 +171,7 @@ pub async fn import_gacha_screenshot(
             .map_err(|e| format!("OCR failed: {}", e))?;
         eprintln!("[WARP] {} raw words", all_words.len());
 
-        // ── 2. Y 聚类 → 分出所有行 ──
+        // ── 2. Y 聚类 → 行 ──
         let mut y_vals: Vec<f64> = all_words.iter().map(|w| w.y + w.height / 2.0).collect();
         y_vals.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         let mut y_clusters: Vec<Vec<f64>> = Vec::new();
@@ -186,62 +186,100 @@ pub async fn import_gacha_screenshot(
             .map(|cl| cl.iter().sum::<f64>() / cl.len() as f64)
             .collect();
         row_centers.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        eprintln!("[WARP] {} rows: {:?}", row_centers.len(), row_centers);
+        eprintln!("[WARP] {} rows", row_centers.len());
 
-        // ── 3. 对每行按 X 间隙分列，只取恰好 4 列的行 ──
+        // ── 3. 找表头行，算全局列边界 ──
         let half_span = if row_centers.len() > 1 { (row_centers[1] - row_centers[0]) / 2.0 } else { 30.0 };
-        let mut table_rows: Vec<Vec<String>> = Vec::new();
+        let mut header_bounds: Vec<f64> = vec![0.0, f64::MAX]; // fallback
 
         for ry in &row_centers {
-            // 收集 Y 在此行的词
+            let mut rw: Vec<&crate::ocr::OcrWord> = all_words.iter()
+                .filter(|w| (w.y + w.height / 2.0 - ry).abs() < half_span)
+                .collect();
+            rw.sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal));
+            let concat: String = rw.iter().map(|w| w.text.trim()).collect::<Vec<_>>().join("");
+            // 检测表头行
+            if concat.contains("对象类型") && concat.contains("跃迁时间") {
+                // 计算表头中各列名的右边缘 X 作为边界
+                // 方法：对 "对象类型""对象名称""跃迁类型""跃迁时间" 每个标签
+                // 找到它在拼合文本中的起始字符位置，映射到对应字的 X
+                let mut char_x: Vec<(usize, f64)> = Vec::new(); // (char_idx_in_text, x)
+                for w in &rw {
+                    for (ci, _) in w.text.char_indices() {
+                        char_x.push((char_x.len(), w.x + ci as f64));
+                    }
+                }
+                let text: String = char_x.iter().map(|_| ' ').collect(); // placeholder length
+                let labels = ["对象类型", "对象名称", "跃迁类型", "跃迁时间"];
+                let mut bounds: Vec<f64> = labels.iter().filter_map(|label| {
+                    // 在拼合文本中找标签起始位置
+                    let search: String = rw.iter().map(|w| w.text.trim()).collect();
+                    search.find(label).map(|byte_pos| {
+                        // 字节→字符索引，取该字 X
+                        let char_idx = search[..byte_pos].chars().count();
+                        char_x.get(char_idx).map(|(_, x)| *x).unwrap_or(f64::MAX)
+                    })
+                }).collect();
+                if bounds.len() == 4 {
+                    bounds.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                    header_bounds = vec![0.0];
+                    for i in 0..3 {
+                        header_bounds.push((bounds[i] + bounds[i + 1]) / 2.0);
+                    }
+                    header_bounds.push(f64::MAX);
+                }
+                eprintln!("[WARP] Header bounds: {:?}", header_bounds);
+                break;
+            }
+        }
+
+        // ── 4. 用全局列边界分所有行，找表头后 5 行 ──
+        let mut all_cells: Vec<(usize, Vec<String>)> = Vec::new(); // (row_idx, cells)
+
+        for (ri, ry) in row_centers.iter().enumerate() {
             let mut rw: Vec<&crate::ocr::OcrWord> = all_words.iter()
                 .filter(|w| (w.y + w.height / 2.0 - ry).abs() < half_span)
                 .collect();
             rw.sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal));
             if rw.is_empty() { continue; }
 
-            // 用 X 间隙切分列
-            let mut cells: Vec<Vec<String>> = vec![vec![rw[0].text.trim().to_string()]];
-            let mut prev_right = rw[0].x + rw[0].width;
-            for w in rw.iter().skip(1) {
-                if w.x - prev_right > 30.0 {
-                    cells.push(vec![w.text.trim().to_string()]);
-                } else {
-                    cells.last_mut().unwrap().push(w.text.trim().to_string());
+            // 用 GLOBAL 列边界分列，不管行内间隙
+            let mut cells: Vec<Vec<String>> = (0..4).map(|_| Vec::new()).collect();
+            for w in &rw {
+                let cx = w.x + w.width / 2.0;
+                let mut ci = 0usize;
+                for bi in 0..header_bounds.len() - 1 {
+                    if cx >= header_bounds[bi] && cx < header_bounds[bi + 1] { ci = bi; break; }
                 }
-                prev_right = w.x + w.width;
+                if ci < 4 { cells[ci].push(w.text.trim().to_string()); }
             }
             let merged: Vec<String> = cells.iter()
                 .map(|c| c.join("").chars().filter(|ch| !ch.is_whitespace()).collect())
                 .collect();
-            // 接受 3-5 列，自动补齐到 4 列或截断（OCR 可能漏字或合并）
-            if merged.len() >= 3 && merged.len() <= 5 {
-                let mut padded = merged;
-                while padded.len() < 4 { padded.push(String::new()); }
-                table_rows.push(padded);
+            if merged.iter().any(|c| !c.is_empty()) {
+                all_cells.push((ri, merged));
             }
         }
-        eprintln!("[WARP] {} rows split into 4 columns", table_rows.len());
-        for (i, r) in table_rows.iter().enumerate() {
-            eprintln!("  Row {}: {:?}", i, r);
-        }
+        eprintln!("[WARP] {} rows with content", all_cells.len());
+        for (ri, r) in &all_cells { eprintln!("  Row {}: {:?}", ri, r); }
 
-        // ── 4. 表格 = 6 行（1 表头 + 5 数据） ──
-        // 表头特征：包含"对象类型"等词
-        let header_idx = table_rows.iter().position(|r| {
-            r[0].contains("对象类型") || r[0].contains("对象") && r[1].contains("名称")
+        // 找表头行（文字含"对象类型"的）
+        let header_idx = all_cells.iter().position(|(_, cells)| {
+            cells.iter().any(|c| c.contains("对象类型"))
         });
 
-        let data_rows = if let Some(h) = header_idx {
-            if h + 5 < table_rows.len() {
-                &table_rows[h + 1 ..= h + 5]
+        let data_rows: Vec<&[String]> = if let Some(h) = header_idx {
+            if h + 5 < all_cells.len() {
+                all_cells[h + 1 ..= h + 5].iter().map(|(_, c)| c.as_slice()).collect()
+            } else if h + 1 < all_cells.len() {
+                all_cells[h + 1 ..].iter().map(|(_, c)| c.as_slice()).collect()
             } else {
-                &table_rows[h + 1 ..]
+                vec![]
             }
         } else {
-            &table_rows[..]
+            all_cells.iter().map(|(_, c)| c.as_slice()).collect()
         };
-        eprintln!("[WARP] Using {} data rows (header at {:?})", data_rows.len(), header_idx);
+        eprintln!("[WARP] {} data rows", data_rows.len());
 
         // ── 5. 去重入库 ──
         let mut imported = 0usize;
