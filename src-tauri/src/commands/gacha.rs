@@ -209,19 +209,28 @@ pub async fn import_gacha_screenshot(
         }
         eprintln!("[IMPORT] Title detected!");
 
-        // 4) 找表头行，用其 X 坐标定义列边界
+        // 4) 找表头行，从拼合文本中定位各列名的起始 X
         let header_row = rows.iter().find(|row| {
             let text: String = row.iter().map(|w| w.text.trim()).collect();
             text.contains("对象类型")
         });
 
-        let col_boundaries = match header_row {
+        let col_boundaries: Vec<f64> = match header_row {
             Some(row) => {
                 let header_labels = ["对象类型", "对象名称", "跃迁类型", "跃迁时间"];
+                // 拼合表头文本，记录每个字来自哪个 word 的 X
+                let concat: Vec<(f64, char)> = row.iter()
+                    .flat_map(|w| w.text.chars().map(move |c| (w.x, c)))
+                    .filter(|(_, c)| !c.is_whitespace())
+                    .collect();
+                let full_text: String = concat.iter().map(|(_, c)| c).collect();
+
                 let mut boundaries: Vec<f64> = header_labels.iter().filter_map(|label| {
-                    row.iter().find(|w| w.text.contains(label)).map(|w| w.x)
+                    full_text.find(label).map(|pos| {
+                        // 找到位置 pos 对应的 word 的 X
+                        concat.get(pos).map(|(x, _)| *x).unwrap_or(f64::MAX)
+                    })
                 }).collect();
-                // 加一个右边界
                 boundaries.push(f64::MAX);
                 boundaries
             },
@@ -229,6 +238,9 @@ pub async fn import_gacha_screenshot(
         };
 
         eprintln!("[IMPORT] Column boundaries: {:?}", col_boundaries);
+        if col_boundaries.len() < 5 {
+            return Err("表头列数不足，无法解析".to_string());
+        }
 
         // 5) 用列边界拆分数据行
         let mut data_rows: Vec<Vec<String>> = Vec::new();
