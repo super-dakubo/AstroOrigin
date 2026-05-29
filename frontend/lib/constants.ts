@@ -19,11 +19,11 @@ export const THEMES = {
     primary: '#A855F7',
     accent: '#FDE047',
     gold: '#FDE047',
-    bg: '#0F172A',
-    text: '#E2E8F0',
-    border: '#1E293B',
+    bg: '#F5F3FF',
+    text: '#1E1B4B',
+    border: '#E0DCF5',
     barGradient: 'linear-gradient(90deg, #A855F7, #FDE047)',
-    isDark: true,
+    isDark: false,
   },
 } as const;
 

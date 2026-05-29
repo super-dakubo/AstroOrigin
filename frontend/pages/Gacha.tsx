@@ -71,16 +71,12 @@ export function Gacha() {
     ? Math.round((stats.lostCount / stats.fiveStarCount) * 100)
     : 0;
 
-  const isDark = currentGame === 'starrail';
-  const headingClass = isDark ? 'text-white' : 'text-gray-900';
-  const subClass = isDark ? 'text-slate-400' : 'text-gray-500';
-
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className={`text-2xl font-bold ${headingClass}`}>抽卡记录</h1>
-          <p className={`text-sm ${subClass} mt-1`}>
+          <h1 className="text-2xl font-bold text-gray-900">抽卡记录</h1>
+          <p className="text-sm text-gray-500 mt-1">
             {currentGame === 'genshin' ? '派蒙帮你记着每一抽' : '帕姆帮你记着每一跃'}
           </p>
         </div>
