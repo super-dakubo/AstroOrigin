@@ -126,10 +126,18 @@ export function RecordTable({ records, onDelete, onSave }: RecordTableProps) {
               <span className={`${r.recordDate ? 'text-gray-900' : 'text-gray-300 italic'}`}>
                 {r.recordDate || '未识别'}
               </span>
-              <span className={`font-medium ${r.itemName ? 'text-gray-900' : 'text-gray-300 italic'}`}>
+              <span className={`font-medium ${
+                r.starRating === 5 ? 'text-amber-500' :
+                r.starRating === 4 ? 'text-purple-500' :
+                r.itemName ? 'text-gray-900' : 'text-gray-300 italic'
+              }`}>
                 {r.itemName || '未识别'}
               </span>
-              <span className={r.starRating === 5 ? 'text-amber-500 font-semibold' : r.starRating > 0 ? 'text-gray-700' : 'text-gray-300 italic'}>
+              <span className={
+                r.starRating === 5 ? 'text-amber-500 font-bold' :
+                r.starRating === 4 ? 'text-purple-500 font-semibold' :
+                r.starRating > 0 ? 'text-gray-400' : 'text-gray-300 italic'
+              }>
                 {r.starRating > 0 ? '★'.repeat(r.starRating) : '?'}
               </span>
               <span>

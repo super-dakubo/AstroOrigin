@@ -372,7 +372,8 @@ pub async fn delete_gacha_record(
 
 // ── 工具函数（模块级别，方便测试） ──
 fn normalize_date(s: &str) -> String {
-    let s = s.replace('·', "-").replace('：', ":")
+    // OCR 常把"4"误识别为"厶"
+    let s = s.replace('·', "-").replace('：', ":").replace('厶', "4")
         .chars().filter(|c| !c.is_whitespace()).collect::<String>();
     let colon_idx = s.chars().position(|c| c == ':');
     if let Some(idx) = colon_idx {
