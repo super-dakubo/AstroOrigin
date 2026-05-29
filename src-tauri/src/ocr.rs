@@ -1,7 +1,9 @@
 use anyhow::{Context, Result};
+use std::io::Write;
 
 /// 对图片字节进行 OCR，返回识别出的文本行
 /// 使用 Windows.Media.Ocr API
+/// 注意：先存临时文件再让 WinRT 读取，避免流所有权问题
 pub fn ocr_image(image_data: &[u8]) -> Result<Vec<String>> {
     // 使用 image 库加载图片
     let img = image::load_from_memory(image_data)
@@ -11,22 +13,28 @@ pub fn ocr_image(image_data: &[u8]) -> Result<Vec<String>> {
     let mut png_buf = std::io::Cursor::new(Vec::new());
     img.write_to(&mut png_buf, image::ImageFormat::Png)
         .context("Failed to encode image as PNG")?;
+    let png_bytes = png_buf.into_inner();
 
-    // 创建内存流供 Windows API 使用
-    let stream = windows::Storage::Streams::InMemoryRandomAccessStream::new()?;
+    // 写入临时文件（WinRT 从文件解码更稳定，避免 InMemoryRandomAccessStream 的 RO_E_CLOSED）
+    let temp_dir = std::env::temp_dir();
+    let temp_path = temp_dir.join(format!("astrorigin_ocr_{}.png", std::process::id()));
+    let mut file = std::fs::File::create(&temp_path)
+        .context("Failed to create temp file for OCR")?;
+    file.write_all(&png_bytes)
+        .context("Failed to write temp file for OCR")?;
+    file.flush()?;
 
-    // 写入 PNG 数据到流
-    {
-        use windows::Storage::Streams::DataWriter;
-        let writer = DataWriter::CreateDataWriter(&stream)?;
-        let bytes = png_buf.into_inner();
-        writer.WriteBytes(&bytes)?;
-        writer.StoreAsync()?.get()?;
-        writer.FlushAsync()?.get()?;
-    }
+    // 用 WinRT API 打开临时文件
+    let path_str = temp_path.to_str().context("Invalid temp path")?;
+    let file = windows::Storage::StorageFile::GetFileFromPathAsync(
+        &windows::core::HSTRING::from(path_str),
+    )?
+    .get()
+    .context("Failed to open temp file")?;
 
-    // 将流位置重置到开头（写入后 DataWriter 停在末尾）
-    stream.Seek(0)?;
+    let stream = file.OpenAsync(windows::Storage::FileAccessMode::Read)?
+        .get()
+        .context("Failed to open file stream")?;
 
     // 获取 OCR 引擎（中文简体）
     let language =
@@ -36,12 +44,19 @@ pub fn ocr_image(image_data: &[u8]) -> Result<Vec<String>> {
 
     // 解码图片为 SoftwareBitmap
     let decoder = windows::Graphics::Imaging::BitmapDecoder::CreateAsync(&stream)?
-        .get()?;
-    let frame = decoder.GetFrameAsync(0)?.get()?;
-    let bitmap = frame.GetSoftwareBitmapAsync()?.get()?;
+        .get()
+        .context("Failed to create bitmap decoder")?;
+    let frame = decoder.GetFrameAsync(0)?.get()
+        .context("Failed to get frame")?;
+    let bitmap = frame.GetSoftwareBitmapAsync()?.get()
+        .context("Failed to get software bitmap")?;
 
     // 执行 OCR
-    let result = engine.RecognizeAsync(&bitmap)?.get()?;
+    let result = engine.RecognizeAsync(&bitmap)?.get()
+        .context("OCR recognition failed")?;
+
+    // 清理临时文件
+    let _ = std::fs::remove_file(&temp_path);
 
     // 提取文本行
     use windows::Media::Ocr::OcrLine;
