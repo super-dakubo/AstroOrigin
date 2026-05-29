@@ -86,7 +86,6 @@ pnpm tauri dev          # 启动 Tauri 开发模式（Vite HMR + Rust 热重载�
 cargo check --manifest-path src-tauri/Cargo.toml    # Rust 编译检查
 npx tsc --noEmit                                     # TypeScript 检查
 pnpm build                                           # 前端构建
-pnpm tauri build                                     # 打包成 .msi 安装包（产物在 src-tauri/target/release/bundle/）
 
 # 依赖
 pnpm add <pkg>                                       # 加前端依赖
@@ -98,7 +97,7 @@ pnpm tauri icon <svg-path>                           # 生成应用图标
 
 ## 数据流
 
-```text
+```
 React Component → useTauriQuery (react-query) → invoke → Tauri Command
                                                           ↓
                                                      spawn_blocking
@@ -109,9 +108,11 @@ React Component → useTauriQuery (react-query) → invoke → Tauri Command
 ## 关键设计决策
 
 - **文件对话框 + 截图导入**：用户通过文件选择器导入截图，不走拖拽
-- **OCR 管线**：裁剪特征区域 → 颜色直方图判断截图类型 → 逐行裁剪 → OCR → 规范化 → 去重入库（全部在 `spawn_blocking` 中执行）
+- **OCR 管线**：整图 OCR → 坐标聚类行列 → 按表头 X 范围分列 → 模糊匹配 → 去重入库（全部在 `spawn_blocking` 中执行）
+- **表格解析**：从表头行计算列 X 边界，所有数据行共用此边界分列。不用间隙阈值，用表头 X 坐标做空间比较
+- **宽容策略**：OCR 识别不准时保留空字段入库，用户可通过 ✏️ 编辑修复。不因单格识别失败丢弃整行
+- **去重**：数据库 UNIQUE 索引 `(game_kind, item_name, record_date)`，`INSERT OR IGNORE`
 - **游戏切换**：使用 Zustand store + CSS 变量，不重启应用
-- **图片处理**：裁剪特征区域比较颜色直方图，不引入 `imageproc`
 - **安全**：`tauri.conf.json` 锁死 CSP，不开启 `shell.open`，使用 capabilities 替代 allowlist
 
 ## AI 自检清单（每次生成代码后逐条检查）
