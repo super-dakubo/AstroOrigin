@@ -246,41 +246,41 @@ pub async fn import_gacha_screenshot(
         let kind_str = &game_kind_clone;
 
         for cells in data_rows {
-            let obj_type = cells[0].trim();
-            let mut item_name = fuzzy_match_name(cells[1].trim());
-            let date_raw = &cells[3];
-            let record_date = normalize_date(date_raw);
-
-            // 类型校验
-            if obj_type != "角色" && obj_type != "光锥" { continue; }
-            // 时间校验
-            let date_ok = record_date.len() == 19
-                && record_date.chars().nth(4) == Some('-')
-                && record_date.chars().nth(7) == Some('-');
-            if !date_ok { continue; }
-
-            let star_rating = if obj_type == "角色" { 4 } else { 3 };
-            // 如果名称能在星铁列表中直接查到，使用字典星级
-            if STARRAIL_NAMES.contains(&item_name.as_str()) {
-                // 常见 4★ 角色 / 3★ 光锥 保持默认
+            // 补齐不足 4 列的（例如 OCR 漏了某格）
+            let mut c: [&str; 4] = ["", "", "", ""];
+            for (i, cell) in cells.iter().enumerate() {
+                if i < 4 { c[i] = cell.trim(); }
             }
 
-            // 去重
-            let exists: bool = conn.query_row(
-                "SELECT COUNT(*) > 0 FROM gacha_records
-                 WHERE game_kind = ? AND item_name = ? AND record_date = ? AND star_rating = ?",
-                rusqlite::params![kind_str, &item_name, &record_date, star_rating],
-                |row| row.get(0),
-            ).unwrap_or(false);
+            let obj_type = c[0];
+            let item_name = fuzzy_match_name(c[1]);
+            let record_date = normalize_date(c[3]);
 
-            if exists { duplicates += 1; } else {
+            // 星数：提示性赋值，用户可手动改
+            let star_rating = if obj_type == "角色" { 4 } else { 3 };
+
+            // 温和去重：只有名称 + 日期都非空才去重
+            let exists = if !item_name.is_empty() && !record_date.is_empty() {
+                conn.query_row(
+                    "SELECT COUNT(*) > 0 FROM gacha_records
+                     WHERE game_kind = ? AND item_name = ? AND record_date = ? AND star_rating = ?",
+                    rusqlite::params![kind_str, &item_name, &record_date, star_rating],
+                    |row| row.get(0),
+                ).unwrap_or(false)
+            } else {
+                false
+            };
+
+            if exists {
+                duplicates += 1;
+            } else {
                 conn.execute(
                     "INSERT INTO gacha_records (game_kind, item_name, star_rating, record_date, is_won)
                      VALUES (?, ?, ?, ?, ?)",
                     rusqlite::params![kind_str, &item_name, star_rating, &record_date, star_rating < 5],
                 ).map_err(|e| format!("Insert error: {}", e))?;
                 imported += 1;
-                eprintln!("[IMPORT]   Imported: {} ({}★, {} | {})", item_name, star_rating, obj_type, record_date);
+                eprintln!("[IMPORT]   Imported: '{}' ({}★, {} | {})", item_name, star_rating, obj_type, record_date);
             }
         }
 
