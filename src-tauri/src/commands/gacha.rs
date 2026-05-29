@@ -238,15 +238,14 @@ pub async fn import_gacha_screenshot(
                 .unwrap_or_default();
 
             if record_date.is_empty() { continue; }
+            // 标准化日期格式：OCR 常用 · 代替 -
+            let record_date = record_date.replace('·', "-").replace(':', ":");
 
-            // 星级判断（5星物品名或附近文本含5/五）
-            let star_rating = if item_name == "轮契" || item_name == "文颂"
-                || item_name == "蕃息" || item_name.contains("三星")
-                || item_name.contains("3")
-            {
-                3
-            } else if lines.iter().any(|l| l.contains('5') || l.contains('五')) {
+            // 星级判断：5星附近有"5"标记，3星光锥常用名硬编码
+            let star_rating = if lines.iter().any(|l| l.contains('5') || l.contains('五')) {
                 5
+            } else if ["轮契", "齐颂", "蕃息", "嘉果"].contains(&item_name.as_str()) {
+                3
             } else {
                 4
             };
