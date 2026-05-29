@@ -184,92 +184,125 @@ pub async fn import_gacha_screenshot(
             rows.push(vec![word]);
         }
 
-        // 每行按 X 排序，然后合成行文本
-        let mut row_texts: Vec<String> = Vec::new();
+        // 每行按 X 排序
         for row in rows.iter_mut() {
             row.sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal));
-            let text: String = row.iter().map(|w| w.text.trim()).collect();
-            let clean: String = text.chars().filter(|c| !c.is_whitespace()).collect();
-            if !clean.is_empty() {
-                row_texts.push(clean);
-            }
         }
+
+        // 合成行文本用于展示
+        let row_texts: Vec<String> = rows.iter().map(|row| {
+            let text: String = row.iter().map(|w| w.text.trim()).collect();
+            text.chars().filter(|c| !c.is_whitespace()).collect::<String>()
+        }).filter(|t: &String| !t.is_empty()).collect();
 
         eprintln!("[IMPORT] Grouped into {} rows:", row_texts.len());
         for (i, t) in row_texts.iter().enumerate() {
             eprintln!("  Row {}: {:?}", i, t);
         }
 
-        // 3) 找标题确认是抽卡页
-        let has_title = row_texts.iter().any(|line| {
-            features.title_keywords.iter().any(|kw| line.contains(kw))
+        // 3) 标题检测
+        let has_title = row_texts.iter().any(|line: &String| {
+            features.title_keywords.iter().any(|kw: &&str| line.contains(kw))
         });
         if !has_title {
             return Err("截图不是抽卡记录页面，请确认截图包含标题".to_string());
         }
         eprintln!("[IMPORT] Title detected!");
 
-        // 4) 找到各列表头位置，按列提取数据
-        let col_headers = ["对象类型", "对象名称", "跃迁类型", "跃迁时间"];
-        let col_values: Vec<Vec<String>> = col_headers.iter().map(|header| {
-            if let Some(pos) = row_texts.iter().position(|l| l.contains(header)) {
-                let next_pos = col_headers.iter()
-                    .filter_map(|h| {
-                        if h == header { return None; }
-                        row_texts.iter().position(|l| l.contains(h))
-                    })
-                    .filter(|p| *p > pos)
-                    .min()
-                    .unwrap_or(row_texts.len());
-                row_texts[pos + 1 .. next_pos].iter()
-                    .filter(|l| {
-                        !l.is_empty()
-                        && !l.contains("历史记录")
-                        && !l.contains("可在本页面")
-                        && l != header
-                    })
-                    .cloned()
-                    .collect()
-            } else {
-                vec![]
-            }
-        }).collect();
+        // 4) 找表头行，用其 X 坐标定义列边界
+        let header_row = rows.iter().find(|row| {
+            let text: String = row.iter().map(|w| w.text.trim()).collect();
+            text.contains("对象类型")
+        });
 
-        if col_values.iter().any(|v| v.is_empty()) || col_values[0].len() != col_values[1].len() {
-            eprintln!("[IMPORT] Table parsing failed, col lengths: {:?}",
-                col_values.iter().map(|v| v.len()).collect::<Vec<_>>());
-            return Err("无法解析表格结构，请确认截图包含完整的抽卡记录表格".to_string());
+        let col_boundaries = match header_row {
+            Some(row) => {
+                let header_labels = ["对象类型", "对象名称", "跃迁类型", "跃迁时间"];
+                let mut boundaries: Vec<f64> = header_labels.iter().filter_map(|label| {
+                    row.iter().find(|w| w.text.contains(label)).map(|w| w.x)
+                }).collect();
+                // 加一个右边界
+                boundaries.push(f64::MAX);
+                boundaries
+            },
+            None => return Err("未找到表头行，无法解析".to_string()),
+        };
+
+        eprintln!("[IMPORT] Column boundaries: {:?}", col_boundaries);
+
+        // 5) 用列边界拆分数据行
+        let mut data_rows: Vec<Vec<String>> = Vec::new();
+        for row in rows.iter() {
+            let text: String = row.iter().map(|w| w.text.trim()).collect();
+            let clean: String = text.chars().filter(|c| !c.is_whitespace()).collect();
+            // 跳过非数据行
+            if clean.contains("历史记录") || clean.contains("可在本页面")
+                || clean.contains("对象类型") || clean.is_empty()
+                || clean == "0" || clean == "00" || clean == "1"
+            {
+                continue;
+            }
+
+            // 将行中的每个词分配到列
+            let mut cells: Vec<String> = vec![String::new(); col_boundaries.len() - 1];
+            for word in row.iter() {
+                let col_idx = col_boundaries.iter()
+                    .position(|b| word.x < *b)
+                    .unwrap_or(col_boundaries.len() - 1);
+                if col_idx < cells.len() {
+                    if !cells[col_idx].is_empty() { cells[col_idx].push(' '); }
+                    cells[col_idx].push_str(word.text.trim());
+                }
+            }
+            // 清理空格
+            let cells: Vec<String> = cells.into_iter()
+                .map(|c| c.chars().filter(|ch| !ch.is_whitespace()).collect())
+                .collect();
+            data_rows.push(cells);
         }
 
-        let num_rows = col_values[0].len();
-        eprintln!("[IMPORT] Parsed {} rows", num_rows);
+        eprintln!("[IMPORT] Parsed {} data rows:", data_rows.len());
+        for (i, row) in data_rows.iter().enumerate() {
+            eprintln!("  Row {}: {:?}", i, row);
+        }
 
-        // 5) 组装记录
+        if data_rows.is_empty() {
+            return Err("无法解析表格数据".to_string());
+        }
+
+        // 6) 组装记录
         let mut imported = 0usize;
         let mut duplicates = 0usize;
         let kind_str = &game_kind_clone;
 
-        for i in 0..num_rows {
-            let obj_type = col_values[0][i].trim().to_string();
-            let item_name_raw = col_values[1][i].trim();
-            let date_raw = col_values[3][i].trim();
+        for cells in &data_rows {
+            if cells.len() < 4 { continue; }
+            let obj_type = cells[0].trim();
+            let item_name_raw = cells[1].trim();
+            let date_raw = cells[3].trim();
 
             let item_name = crate::ocr::normalize_item_name(item_name_raw, features.name_normalizations);
 
+            // 安全解析日期（不用字节切片，避免中文 UTF-8 边界问题）
             let record_date = date_raw
-                .replace('·', "-").replace('：', ":");
-            let record_date = if record_date.len() > 10 && !record_date[10..].starts_with(' ') {
-                format!("{} {}", &record_date[..10], &record_date[10..])
+                .replace('·', "-").replace('：', ":")
+                .chars().filter(|c| !c.is_whitespace()).collect::<String>();
+            // 在时间部分前加空格
+            let record_date = if let Some(pos) = record_date.find(':') {
+                if pos >= 3 {
+                    let (date_part, time_part) = record_date.split_at(pos - 2);
+                    format!("{} {}", date_part.trim(), time_part.trim())
+                } else {
+                    record_date.clone()
+                }
             } else {
                 record_date
             };
 
             let star_rating = if obj_type == "角色" {
-                if item_name.contains('5') || item_name.contains('五') { 5 } else { 4 }
+                4  // 默认 4★，5★会在手动确认
             } else if ["轮契", "齐颂", "蕃息", "嘉果"].contains(&item_name.as_str()) {
                 3
-            } else if item_name.contains('5') || item_name.contains('五') {
-                5
             } else {
                 4
             };
