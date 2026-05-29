@@ -214,8 +214,11 @@ pub async fn import_gacha_screenshot(
             let merged: Vec<String> = cells.iter()
                 .map(|c| c.join("").chars().filter(|ch| !ch.is_whitespace()).collect())
                 .collect();
-            if merged.len() == 4 {
-                table_rows.push(merged);
+            // 接受 3-5 列，自动补齐到 4 列或截断（OCR 可能漏字或合并）
+            if merged.len() >= 3 && merged.len() <= 5 {
+                let mut padded = merged;
+                while padded.len() < 4 { padded.push(String::new()); }
+                table_rows.push(padded);
             }
         }
         eprintln!("[WARP] {} rows split into 4 columns", table_rows.len());
