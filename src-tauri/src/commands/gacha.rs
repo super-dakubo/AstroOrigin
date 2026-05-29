@@ -188,9 +188,9 @@ pub async fn import_gacha_screenshot(
         row_centers.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         eprintln!("[WARP] {} rows", row_centers.len());
 
-        // ── 3. 找表头行，算全局列边界 ──
+        // ── 3. 找表头行，提取 4 列名的 X 范围 ──
         let half_span = if row_centers.len() > 1 { (row_centers[1] - row_centers[0]) / 2.0 } else { 30.0 };
-        let mut header_bounds: Vec<f64> = vec![0.0, f64::MAX]; // fallback
+        let mut hdr_cols: Vec<(f64, f64)> = Vec::new(); // 每列 [(x_start, x_end), ...]
 
         for ry in &row_centers {
             let mut rw: Vec<&crate::ocr::OcrWord> = all_words.iter()
@@ -198,87 +198,87 @@ pub async fn import_gacha_screenshot(
                 .collect();
             rw.sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal));
             let concat: String = rw.iter().map(|w| w.text.trim()).collect::<Vec<_>>().join("");
-            // 检测表头行
-            if concat.contains("对象类型") && concat.contains("跃迁时间") {
-                // 计算表头中各列名的右边缘 X 作为边界
-                // 方法：对 "对象类型""对象名称""跃迁类型""跃迁时间" 每个标签
-                // 找到它在拼合文本中的起始字符位置，映射到对应字的 X
-                let mut char_x: Vec<(usize, f64)> = Vec::new(); // (char_idx_in_text, x)
-                for w in &rw {
-                    for (ci, _) in w.text.char_indices() {
-                        char_x.push((char_x.len(), w.x + ci as f64));
-                    }
+            if !concat.contains("对象类型") || !concat.contains("跃迁时间") { continue; }
+
+            // 表头行的 4 个列名一定有明显 X 间隙
+            // 每个列名内部字间距小，列间间距大
+            let gaps: Vec<(usize, f64)> = rw.windows(2).enumerate()
+                .map(|(i, pair)| (i, pair[1].x - (pair[0].x + pair[0].width)))
+                .filter(|(_, g)| *g > 0.0)
+                .collect();
+            // 最大 3 个 gap 分隔 4 个列名
+            let mut sorted = gaps.clone();
+            sorted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+            let split_idx: Vec<usize> = sorted.iter().take(gaps.len().min(3)).map(|(i, _)| *i).collect();
+
+            if split_idx.len() < 3 { /* 不足 3 个间隙，跳过 */ break; }
+            let mut split_idx = split_idx;
+            split_idx.sort();
+
+            let mut start = 0usize;
+            for si in &split_idx {
+                let end = *si;
+                if end > start {
+                    let xs: Vec<f64> = rw[start..=end].iter().map(|w| w.x).collect();
+                    let x_min = xs.iter().cloned().fold(f64::MAX, f64::min);
+                    let x_max = rw[start..=end].iter()
+                        .map(|w| w.x + w.width).fold(f64::MIN, f64::max);
+                    hdr_cols.push((x_min, x_max));
                 }
-                let text: String = char_x.iter().map(|_| ' ').collect(); // placeholder length
-                let labels = ["对象类型", "对象名称", "跃迁类型", "跃迁时间"];
-                let mut bounds: Vec<f64> = labels.iter().filter_map(|label| {
-                    // 在拼合文本中找标签起始位置
-                    let search: String = rw.iter().map(|w| w.text.trim()).collect();
-                    search.find(label).map(|byte_pos| {
-                        // 字节→字符索引，取该字 X
-                        let char_idx = search[..byte_pos].chars().count();
-                        char_x.get(char_idx).map(|(_, x)| *x).unwrap_or(f64::MAX)
-                    })
-                }).collect();
-                if bounds.len() == 4 {
-                    bounds.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-                    header_bounds = vec![0.0];
-                    for i in 0..3 {
-                        header_bounds.push((bounds[i] + bounds[i + 1]) / 2.0);
-                    }
-                    header_bounds.push(f64::MAX);
-                }
-                eprintln!("[WARP] Header bounds: {:?}", header_bounds);
-                break;
+                start = *si + 1;
             }
+            // 最后一段
+            if start < rw.len() {
+                let xs: Vec<f64> = rw[start..].iter().map(|w| w.x).collect();
+                let x_min = xs.iter().cloned().fold(f64::MAX, f64::min);
+                let x_max = rw[start..].iter().map(|w| w.x + w.width).fold(f64::MIN, f64::max);
+                hdr_cols.push((x_min, x_max));
+            }
+            eprintln!("[WARP] Header columns: {:?}", hdr_cols);
+            break;
         }
 
-        // ── 4. 用全局列边界分所有行，找表头后 5 行 ──
-        let mut all_cells: Vec<(usize, Vec<String>)> = Vec::new(); // (row_idx, cells)
+        if hdr_cols.len() != 4 {
+            return Err("无法定位表头4列，截图可能不完整".to_string());
+        }
 
-        for (ri, ry) in row_centers.iter().enumerate() {
+        // ── 4. 对表头下所有行，用表头 X 范围判断每字属于哪列 ──
+        let hdr_x = [
+            hdr_cols[0].0, hdr_cols[1].0, hdr_cols[2].0, hdr_cols[3].0,
+        ]; // 每列起始 X
+        let mut data_rows: Vec<[String; 4]> = Vec::new();
+        let mut found_header = false;
+
+        for ry in &row_centers {
             let mut rw: Vec<&crate::ocr::OcrWord> = all_words.iter()
                 .filter(|w| (w.y + w.height / 2.0 - ry).abs() < half_span)
                 .collect();
             rw.sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal));
-            if rw.is_empty() { continue; }
+            let concat: String = rw.iter().map(|w| w.text.trim()).collect::<Vec<_>>().join("");
 
-            // 用 GLOBAL 列边界分列，不管行内间隙
-            let mut cells: Vec<Vec<String>> = (0..4).map(|_| Vec::new()).collect();
+            // 找到表头行
+            if concat.contains("对象类型") { found_header = true; continue; }
+            if !found_header { continue; }
+            // 跳过页码（只有 1 个短字的行）
+            if rw.len() <= 2 { continue; }
+
+            let mut cells: [Vec<String>; 4] = Default::default();
             for w in &rw {
                 let cx = w.x + w.width / 2.0;
-                let mut ci = 0usize;
-                for bi in 0..header_bounds.len() - 1 {
-                    if cx >= header_bounds[bi] && cx < header_bounds[bi + 1] { ci = bi; break; }
+                // 往后看：字的 X 落在哪一列的起始之后，就属于那一列
+                let mut ci = 3usize;
+                for (hi, &hx) in hdr_x.iter().enumerate().rev() {
+                    if cx >= hx { ci = hi; break; }
                 }
-                if ci < 4 { cells[ci].push(w.text.trim().to_string()); }
+                cells[ci].push(w.text.trim().to_string());
             }
-            let merged: Vec<String> = cells.iter()
-                .map(|c| c.join("").chars().filter(|ch| !ch.is_whitespace()).collect())
-                .collect();
-            if merged.iter().any(|c| !c.is_empty()) {
-                all_cells.push((ri, merged));
-            }
+            let merged: [String; 4] = [
+                cells[0].join(""), cells[1].join(""),
+                cells[2].join(""), cells[3].join(""),
+            ];
+            data_rows.push(merged);
+            if data_rows.len() >= 5 { break; } // 只要 5 行数据
         }
-        eprintln!("[WARP] {} rows with content", all_cells.len());
-        for (ri, r) in &all_cells { eprintln!("  Row {}: {:?}", ri, r); }
-
-        // 找表头行（文字含"对象类型"的）
-        let header_idx = all_cells.iter().position(|(_, cells)| {
-            cells.iter().any(|c| c.contains("对象类型"))
-        });
-
-        let data_rows: Vec<&[String]> = if let Some(h) = header_idx {
-            if h + 5 < all_cells.len() {
-                all_cells[h + 1 ..= h + 5].iter().map(|(_, c)| c.as_slice()).collect()
-            } else if h + 1 < all_cells.len() {
-                all_cells[h + 1 ..].iter().map(|(_, c)| c.as_slice()).collect()
-            } else {
-                vec![]
-            }
-        } else {
-            all_cells.iter().map(|(_, c)| c.as_slice()).collect()
-        };
         eprintln!("[WARP] {} data rows", data_rows.len());
 
         // ── 5. 去重入库 ──
@@ -286,12 +286,12 @@ pub async fn import_gacha_screenshot(
         let mut duplicates = 0usize;
         let kind_str = &game_kind_clone;
 
-        for cells in data_rows {
-            // 补齐不足 4 列的（例如 OCR 漏了某格）
-            let mut c: [&str; 4] = ["", "", "", ""];
-            for (i, cell) in cells.iter().enumerate() {
-                if i < 4 { c[i] = cell.trim(); }
-            }
+        for cells in &data_rows {
+            // cells 已经是 [String; 4]，直接 trim 引用
+            let c: [&str; 4] = [
+                cells[0].trim(), cells[1].trim(),
+                cells[2].trim(), cells[3].trim(),
+            ];
 
             let obj_type = c[0];
             let item_name = fuzzy_match_name(c[1]);
