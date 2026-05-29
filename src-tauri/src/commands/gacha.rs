@@ -176,26 +176,25 @@ pub async fn import_gacha_screenshot(
         }
         eprintln!("[IMPORT] Title detected, parsing rows...");
 
-        // 2) 逐行裁剪 + OCR 提取数据（避免 OCR 按列读表的问题）
+        // 2) 逐行裁剪 + OCR 提取数据
         let img = image::load_from_memory(&img_bytes)
             .map_err(|e| format!("Image decode error: {}", e))?;
         let (w, h) = img.dimensions();
 
-        // 行区域：假设记录表格在标题下 10%-90% 区域
-        let row_data_y = (h as f64 * 0.10) as u32;
-        let row_data_h = (h as f64 * 0.80) as u32;
+        // 记录表格通常在 y=18%~55% 区域，每行高约 6%
+        let row_y_start = (h as f64 * 0.18) as u32;
+        let row_h = (h as f64 * 0.065) as u32;
         let row_x = (w as f64 * 0.02) as u32;
         let row_w = (w as f64 * 0.96) as u32;
-        let row_h = (h as f64 * 0.06) as u32;  // 每行高度约 6%
-        let max_rows = 15;
+        let max_rows = 10;
 
         let mut imported = 0usize;
         let mut duplicates = 0usize;
         let kind_str = &game_kind_clone;
 
         for i in 0..max_rows {
-            let y = row_data_y + i * row_h;
-            if y + row_h > row_data_y + row_data_h { break; }
+            let y = row_y_start + i * row_h;
+            if y + row_h > h { break; }
 
             let row = img.crop_imm(row_x, y, row_w, row_h);
             let mut buf = std::io::Cursor::new(Vec::new());
@@ -205,24 +204,29 @@ pub async fn import_gacha_screenshot(
                 Ok(l) => l,
                 Err(_) => continue,
             };
-            // 去空格
             let lines: Vec<String> = lines.iter()
                 .map(|l| l.chars().filter(|c| !c.is_whitespace()).collect())
                 .collect();
 
-            if lines.len() < 3 { continue; }  // 至少要有物品名
+            if lines.is_empty() { continue; }
 
-            // 尝试找物品名（跳过"对象类型""光锥"等表头词）
+            // 跳过表头行（对象类型、对象名称等）
+            let has_header = lines.iter().any(|l| {
+                l.contains("对象类型") || l.contains("对象名称")
+                || l.contains("跃迁类型") || l.contains("跃迁时间")
+            });
+            if has_header { continue; }
+
+            // 找物品名：在行内容中最不像标签的那个
             let item_name = lines.iter()
                 .find(|l| {
                     let t = l.trim();
                     !t.is_empty()
-                        && t != "对象类型" && t != "对象名称"
-                        && t != "跃迁类型" && t != "跃迁时间"
                         && t != "光锥" && t != "角色"
                         && t != "角色活动跃迁" && t != "光锥活动跃迁"
-                        && !t.contains("可在本页面")
-                        && !t.contains("历史记录")
+                        && !t.contains("历史记录") && !t.contains("可在本页面")
+                        && !t.contains('·') && !t.contains('-')
+                        && !t.contains('：') && !t.contains(':')
                 })
                 .map(|s| s.trim().to_string());
 
@@ -231,19 +235,31 @@ pub async fn import_gacha_screenshot(
                 None => continue,
             };
 
-            // 尝试找日期
+            // 找日期行：包含 · 或 - 的
             let record_date = lines.iter()
-                .find(|l| l.contains('-') || l.contains('·'))
-                .map(|s| s.trim().to_string())
+                .find(|l| {
+                    let t = l.as_str();
+                    t.contains('·') || t.contains('-')
+                })
+                .map(|s| {
+                    let d = s.trim().to_string();
+                    // 替换全角符号
+                    let d = d.replace('·', "-").replace('：', ":");
+                    // OCR 可能合并了日期和时间（2026-05-2619:56:00），插入空格
+                    // 在时间部分前加空格
+                    if d.len() > 10 && !d[10..].starts_with(' ') {
+                        format!("{} {}", &d[..10], &d[10..])
+                    } else {
+                        d
+                    }
+                })
                 .unwrap_or_default();
 
             if record_date.is_empty() { continue; }
-            // 标准化日期格式：OCR 常用 · 代替 -
-            let record_date = record_date.replace('·', "-").replace(':', ":");
 
-            // 星级判断：5星附近有"5"标记，3星光锥常用名硬编码
-            let star_rating = if lines.iter().any(|l| l.contains('5') || l.contains('五')) {
-                5
+            // 星级：从物品名判断（角色4★/5★，3星光锥按常见名列表）
+            let star_rating = if item_name.contains('5') || item_name.contains('五') {
+                5  // 5★ 标记在物品名中
             } else if ["轮契", "齐颂", "蕃息", "嘉果"].contains(&item_name.as_str()) {
                 3
             } else {
