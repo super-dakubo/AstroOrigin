@@ -8,9 +8,18 @@ pub fn ocr_image(image_data: &[u8]) -> Result<Vec<String>> {
     eprintln!("[OCR] Step 1: loading image from memory ({} bytes)", image_data.len());
     let img = image::load_from_memory(image_data)?;
 
-    eprintln!("[OCR] Step 2: encoding to PNG ({}x{})", img.width(), img.height());
+    eprintln!("[OCR] Step 2: preprocessing (grayscale, 2x enlarge)");
+    // 灰度化 + 2x 放大，提高 OCR 识别率
+    let gray = img.grayscale();
+    let enlarged = image::imageops::resize(
+        &gray,
+        gray.width() * 2,
+        gray.height() * 2,
+        image::imageops::FilterType::CatmullRom,
+    );
+    eprintln!("[OCR] Step 2b: encoding enlarged PNG ({}x{})", enlarged.width(), enlarged.height());
     let mut png_buf = std::io::Cursor::new(Vec::new());
-    img.write_to(&mut png_buf, image::ImageFormat::Png)?;
+    enlarged.write_to(&mut png_buf, image::ImageFormat::Png)?;
     let png_bytes = png_buf.into_inner();
 
     let temp_dir = std::env::temp_dir();
