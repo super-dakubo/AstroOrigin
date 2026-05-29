@@ -337,3 +337,19 @@ pub async fn import_gacha_screenshot(
 
     result
 }
+
+#[tauri::command]
+pub async fn delete_gacha_record(
+    pool: tauri::State<'_, DbPool>,
+    id: i64,
+) -> TauriResult<bool> {
+    let pool = pool.inner().clone();
+    tokio::task::spawn_blocking(move || {
+        let conn = pool.get().map_err(|e| format!("DB error: {}", e))?;
+        conn.execute("DELETE FROM gacha_records WHERE id = ?", rusqlite::params![id])
+            .map_err(|e| format!("Delete error: {}", e))?;
+        Ok(true)
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
+}
