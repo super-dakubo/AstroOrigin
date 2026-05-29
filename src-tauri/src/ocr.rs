@@ -25,6 +25,9 @@ pub fn ocr_image(image_data: &[u8]) -> Result<Vec<String>> {
         writer.FlushAsync()?.get()?;
     }
 
+    // 将流位置重置到开头（写入后 DataWriter 停在末尾）
+    stream.Seek(0)?;
+
     // 获取 OCR 引擎（中文简体）
     let language =
         windows::Globalization::Language::CreateLanguage(&windows::core::HSTRING::from("zh-CN"))?;
