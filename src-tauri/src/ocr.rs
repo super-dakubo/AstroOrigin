@@ -1,13 +1,24 @@
 use anyhow::{Context, Result};
+use image::GenericImageView;
 use std::io::Write;
 
-/// 对图片字节进行 OCR，返回识别出的文本行
-/// 使用 Windows.Media.Ocr API
-/// 注意：先存临时文件再让 WinRT 读取，避免流所有权问题
-pub fn ocr_image(image_data: &[u8]) -> Result<Vec<String>> {
-    let img = image::load_from_memory(image_data)?;
+/// OCR 识别出的单个文字/词，带坐标
+#[derive(Debug, Clone)]
+pub struct OcrWord {
+    pub text: String,
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
 
-    // 灰度化 + 2x 放大，提高 OCR 识别率
+/// 对图片字节进行 OCR，返回文字及其坐标
+/// 坐标是原始图片尺寸（内部 2x 放大后换算回原始坐标）
+pub fn ocr_image(image_data: &[u8]) -> Result<Vec<OcrWord>> {
+    let img = image::load_from_memory(image_data)?;
+    let (orig_w, orig_h) = img.dimensions();
+
+    // 灰度化 + 2x 放大，提高识别率
     let gray = img.grayscale();
     let enlarged = image::imageops::resize(
         &gray,
@@ -39,34 +50,40 @@ pub fn ocr_image(image_data: &[u8]) -> Result<Vec<String>> {
     let engine = windows::Media::Ocr::OcrEngine::TryCreateFromLanguage(&language)?;
 
     let decoder = windows::Graphics::Imaging::BitmapDecoder::CreateAsync(&stream)?.get()?;
-
     let frame = decoder.GetFrameAsync(0)?.get()?;
-
     let bitmap = frame.GetSoftwareBitmapAsync()?.get()?;
 
     let result = engine.RecognizeAsync(&bitmap)?.get()?;
-    use windows::Media::Ocr::OcrLine;
-
-    let lines: Vec<String> = result
-        .Lines()?
-        .into_iter()
-        .filter_map(|line: OcrLine| line.Text().ok())
-        .map(|h| h.to_string())
-        .collect();
 
     let _ = std::fs::remove_file(&temp_path);
-    Ok(lines)
-}
 
-/// 对图片裁剪区域进行 OCR
-pub fn ocr_region(image_data: &[u8], region: (u32, u32, u32, u32)) -> Result<Vec<String>> {
-    let img = image::load_from_memory(image_data).context("Failed to decode image")?;
-    let cropped = img.crop_imm(region.0, region.1, region.2, region.3);
-    let mut buf = std::io::Cursor::new(Vec::new());
-    cropped
-        .write_to(&mut buf, image::ImageFormat::Png)
-        .context("Failed to encode cropped region")?;
-    ocr_image(buf.get_ref())
+    // 提取带坐标的文字，坐标从 2x 放大回退到原始尺寸
+    let scale_x = orig_w as f64 / (enlarged.width() as f64);
+    let scale_y = orig_h as f64 / (enlarged.height() as f64);
+
+    let mut words = Vec::new();
+    for line in result.Lines()?.into_iter() {
+        for word in line.Words()?.into_iter() {
+            let text = match word.Text() {
+                Ok(t) => t.to_string(),
+                Err(_) => continue,
+            };
+            if text.trim().is_empty() { continue; }
+            let rect = match word.BoundingRect() {
+                Ok(r) => r,
+                Err(_) => continue,
+            };
+            words.push(OcrWord {
+                text,
+                x: rect.X as f64 * scale_x,
+                y: rect.Y as f64 * scale_y,
+                width: rect.Width as f64 * scale_x,
+                height: rect.Height as f64 * scale_y,
+            });
+        }
+    }
+
+    Ok(words)
 }
 
 /// 规范化物品名称

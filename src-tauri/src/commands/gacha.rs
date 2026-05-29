@@ -3,7 +3,6 @@ use crate::db::DbPool;
 use crate::error::TauriResult;
 use crate::game::GameKind;
 use anyhow::Context;
-use image::GenericImageView;
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -161,112 +160,120 @@ pub async fn import_gacha_screenshot(
     let result = tokio::task::spawn_blocking(move || {
         let conn = pool.get().map_err(|e| format!("DB error: {}", e))?;
 
-        // 1) 全图 OCR 只做标题检测
-        let ocr_lines = crate::ocr::ocr_image(&img_bytes)
+        // 1) OCR 全图，拿到文字 + 坐标
+        let words = crate::ocr::ocr_image(&img_bytes)
             .map_err(|e| format!("OCR failed: {}", e))?;
-        let clean: Vec<String> = ocr_lines.iter()
-            .map(|l| l.chars().filter(|c| !c.is_whitespace()).collect())
-            .collect();
 
-        let has_title = clean.iter().any(|line| {
+        eprintln!("[IMPORT] OCR returned {} words", words.len());
+
+        // 2) 按 Y 坐标分组 → 恢复行顺序（OCR 本身已从左到右、从上到下读）
+        // 同一行内 Y 坐标差不超过 15px（容差）
+        let mut rows: Vec<Vec<crate::ocr::OcrWord>> = Vec::new();
+        let row_tolerance = 15.0;
+        'outer: for word in words {
+            let y_center = word.y + word.height / 2.0;
+            for row in rows.iter_mut() {
+                if let Some(first) = row.first() {
+                    let row_y = first.y + first.height / 2.0;
+                    if (y_center - row_y).abs() < row_tolerance {
+                        row.push(word);
+                        continue 'outer;
+                    }
+                }
+            }
+            rows.push(vec![word]);
+        }
+
+        // 每行按 X 排序，然后合成行文本
+        let mut row_texts: Vec<String> = Vec::new();
+        for row in rows.iter_mut() {
+            row.sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal));
+            let text: String = row.iter().map(|w| w.text.trim()).collect();
+            let clean: String = text.chars().filter(|c| !c.is_whitespace()).collect();
+            if !clean.is_empty() {
+                row_texts.push(clean);
+            }
+        }
+
+        eprintln!("[IMPORT] Grouped into {} rows:", row_texts.len());
+        for (i, t) in row_texts.iter().enumerate() {
+            eprintln!("  Row {}: {:?}", i, t);
+        }
+
+        // 3) 找标题确认是抽卡页
+        let has_title = row_texts.iter().any(|line| {
             features.title_keywords.iter().any(|kw| line.contains(kw))
         });
         if !has_title {
             return Err("截图不是抽卡记录页面，请确认截图包含标题".to_string());
         }
-        eprintln!("[IMPORT] Title detected, parsing rows...");
+        eprintln!("[IMPORT] Title detected!");
 
-        // 2) 逐行裁剪 + OCR 提取数据
-        let img = image::load_from_memory(&img_bytes)
-            .map_err(|e| format!("Image decode error: {}", e))?;
-        let (w, h) = img.dimensions();
+        // 4) 找到各列表头位置，按列提取数据
+        let col_headers = ["对象类型", "对象名称", "跃迁类型", "跃迁时间"];
+        let col_values: Vec<Vec<String>> = col_headers.iter().map(|header| {
+            if let Some(pos) = row_texts.iter().position(|l| l.contains(header)) {
+                let next_pos = col_headers.iter()
+                    .filter_map(|h| {
+                        if h == header { return None; }
+                        row_texts.iter().position(|l| l.contains(h))
+                    })
+                    .filter(|p| *p > pos)
+                    .min()
+                    .unwrap_or(row_texts.len());
+                row_texts[pos + 1 .. next_pos].iter()
+                    .filter(|l| {
+                        !l.is_empty()
+                        && !l.contains("历史记录")
+                        && !l.contains("可在本页面")
+                        && l != header
+                    })
+                    .cloned()
+                    .collect()
+            } else {
+                vec![]
+            }
+        }).collect();
 
-        // 记录表格通常在 y=18%~55% 区域，每行高约 6%
-        let row_y_start = (h as f64 * 0.18) as u32;
-        let row_h = (h as f64 * 0.065) as u32;
-        let row_x = (w as f64 * 0.02) as u32;
-        let row_w = (w as f64 * 0.96) as u32;
-        let max_rows = 10;
+        if col_values.iter().any(|v| v.is_empty()) || col_values[0].len() != col_values[1].len() {
+            eprintln!("[IMPORT] Table parsing failed, col lengths: {:?}",
+                col_values.iter().map(|v| v.len()).collect::<Vec<_>>());
+            return Err("无法解析表格结构，请确认截图包含完整的抽卡记录表格".to_string());
+        }
 
+        let num_rows = col_values[0].len();
+        eprintln!("[IMPORT] Parsed {} rows", num_rows);
+
+        // 5) 组装记录
         let mut imported = 0usize;
         let mut duplicates = 0usize;
         let kind_str = &game_kind_clone;
 
-        for i in 0..max_rows {
-            let y = row_y_start + i * row_h;
-            if y + row_h > h { break; }
+        for i in 0..num_rows {
+            let obj_type = col_values[0][i].trim().to_string();
+            let item_name_raw = col_values[1][i].trim();
+            let date_raw = col_values[3][i].trim();
 
-            let row = img.crop_imm(row_x, y, row_w, row_h);
-            let mut buf = std::io::Cursor::new(Vec::new());
-            if row.write_to(&mut buf, image::ImageFormat::Png).is_err() { continue; }
+            let item_name = crate::ocr::normalize_item_name(item_name_raw, features.name_normalizations);
 
-            let lines = match crate::ocr::ocr_image(buf.get_ref()) {
-                Ok(l) => l,
-                Err(_) => continue,
-            };
-            let lines: Vec<String> = lines.iter()
-                .map(|l| l.chars().filter(|c| !c.is_whitespace()).collect())
-                .collect();
-
-            if lines.is_empty() { continue; }
-
-            // 跳过表头行（对象类型、对象名称等）
-            let has_header = lines.iter().any(|l| {
-                l.contains("对象类型") || l.contains("对象名称")
-                || l.contains("跃迁类型") || l.contains("跃迁时间")
-            });
-            if has_header { continue; }
-
-            // 找物品名：在行内容中最不像标签的那个
-            let item_name = lines.iter()
-                .find(|l| {
-                    let t = l.trim();
-                    !t.is_empty()
-                        && t != "光锥" && t != "角色"
-                        && t != "角色活动跃迁" && t != "光锥活动跃迁"
-                        && !t.contains("历史记录") && !t.contains("可在本页面")
-                        && !t.contains('·') && !t.contains('-')
-                        && !t.contains('：') && !t.contains(':')
-                })
-                .map(|s| s.trim().to_string());
-
-            let item_name = match item_name {
-                Some(n) => crate::ocr::normalize_item_name(&n, features.name_normalizations),
-                None => continue,
+            let record_date = date_raw
+                .replace('·', "-").replace('：', ":");
+            let record_date = if record_date.len() > 10 && !record_date[10..].starts_with(' ') {
+                format!("{} {}", &record_date[..10], &record_date[10..])
+            } else {
+                record_date
             };
 
-            // 找日期行：包含 · 或 - 的
-            let record_date = lines.iter()
-                .find(|l| {
-                    let t = l.as_str();
-                    t.contains('·') || t.contains('-')
-                })
-                .map(|s| {
-                    let d = s.trim().to_string();
-                    // 替换全角符号
-                    let d = d.replace('·', "-").replace('：', ":");
-                    // OCR 可能合并了日期和时间（2026-05-2619:56:00），插入空格
-                    // 在时间部分前加空格
-                    if d.len() > 10 && !d[10..].starts_with(' ') {
-                        format!("{} {}", &d[..10], &d[10..])
-                    } else {
-                        d
-                    }
-                })
-                .unwrap_or_default();
-
-            if record_date.is_empty() { continue; }
-
-            // 星级：从物品名判断（角色4★/5★，3星光锥按常见名列表）
-            let star_rating = if item_name.contains('5') || item_name.contains('五') {
-                5  // 5★ 标记在物品名中
+            let star_rating = if obj_type == "角色" {
+                if item_name.contains('5') || item_name.contains('五') { 5 } else { 4 }
             } else if ["轮契", "齐颂", "蕃息", "嘉果"].contains(&item_name.as_str()) {
                 3
+            } else if item_name.contains('5') || item_name.contains('五') {
+                5
             } else {
                 4
             };
 
-            // 去重
             let exists: bool = conn
                 .query_row(
                     "SELECT COUNT(*) > 0 FROM gacha_records
@@ -286,7 +293,7 @@ pub async fn import_gacha_screenshot(
                 )
                 .map_err(|e| format!("Insert error: {}", e))?;
                 imported += 1;
-                eprintln!("[IMPORT]   Imported: {} ({}★, {})", item_name, star_rating, record_date);
+                eprintln!("[IMPORT]   Imported: {} ({}★, {} | {})", item_name, star_rating, obj_type, record_date);
             }
         }
 
