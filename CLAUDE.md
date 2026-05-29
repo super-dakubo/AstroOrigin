@@ -86,6 +86,7 @@ pnpm tauri dev          # 启动 Tauri 开发模式（Vite HMR + Rust 热重载�
 cargo check --manifest-path src-tauri/Cargo.toml    # Rust 编译检查
 npx tsc --noEmit                                     # TypeScript 检查
 pnpm build                                           # 前端构建
+pnpm tauri build                                     # 打包成 .msi / .exe（产物在 src-tauri/target/release/bundle/）
 
 # 依赖
 pnpm add <pkg>                                       # 加前端依赖
