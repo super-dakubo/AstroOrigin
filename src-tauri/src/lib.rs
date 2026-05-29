@@ -1,7 +1,31 @@
+mod commands;
+mod db;
+mod error;
+
+use db::init_pool;
+use tauri::Manager;
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .setup(|app| {
+            let app_dir = app
+                .path()
+                .app_data_dir()
+                .expect("Failed to get app data dir");
+            std::fs::create_dir_all(&app_dir).expect("Failed to create app data dir");
+            let db_path = app_dir.join("companion.db");
+            let pool = init_pool(db_path.to_str().unwrap())
+                .expect("Failed to initialize database");
+
+            app.manage(pool);
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            commands::gacha::get_gacha_records,
+            commands::gacha::get_gacha_stats,
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
