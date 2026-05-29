@@ -59,7 +59,7 @@ impl GameKind {
             Self::StarRail => GameFeatures {
                 title_region: (0.35, 0.02, 0.3, 0.06),
                 row_region: (0.05, 0.12, 0.9, 0.8, 0.07),
-                title_keywords: &["跃迁记录"],
+                title_keywords: &["跃迁记录", "历史记录"],
                 name_normalizations: &[
                     ("布洛妮娅·角色", "布洛妮娅"),
                     ("姬子·角色", "姬子"),
