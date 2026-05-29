@@ -17,7 +17,7 @@
 ## 文件结构（本阶段创建/修改）
 
 ```
-companion-app/                          # Tauri 项目根目录
+📁 d:\code\AstroOrigin/                 # Tauri 项目根目录（直接在项目根，不要嵌套子目录）
 ├── package.json                        # Create: 依赖锁定
 ├── pnpm-lock.yaml                      # Generated
 ├── vite.config.ts                      # Create: Vite 配置
@@ -77,31 +77,42 @@ companion-app/                          # Tauri 项目根目录
 **Files:**
 - Create: 全部脚手架文件（通过 `pnpm create tauri-app` 生成后清理）
 
-- [ ] **Step 1: 创建 Tauri 项目**
+- [ ] **Step 1: 创建 Tauri 项目（在临时目录生成，然后移到根目录）**
 
 ```bash
-cd d:\code\AstroOrigin
-pnpm create tauri-app@latest companion-app --template react-ts --manager pnpm
-cd companion-app
+cd /d/code/AstroOrigin
+# 在临时目录创建项目，避免嵌套
+pnpm create tauri-app@latest _tauri-tmp --template react-ts --manager pnpm
+# 将生成的文件移到项目根目录（合并）
+mv _tauri-tmp/* _tauri-tmp/.* . 2>/dev/null || true
+mv _tauri-tmp/src-tauri .  # src-tauri 是 Rust 部分，直接保留
+rmdir _tauri-tmp
 ```
 
-- [ ] **Step 2: 清理生成文件，调整为约定目录结构**
+如果 create tauri-app 交互式无法自动完成，则手动创建所需文件（包结构已知）。
+
+注意：项目已有 README.md、LICENSE、.gitignore，覆盖即可。
+
+- [ ] **Step 2: 调整目录结构（前端代码移到 frontend/）**
 
 ```bash
-# 将前端代码从 src/ 移到 frontend/
+cd /d/code/AstroOrigin
 mkdir -p frontend/pages frontend/components frontend/hooks frontend/stores frontend/lib
-mv src/App.tsx frontend/App.tsx
-mv src/App.css frontend/App.css
-mv src/main.tsx frontend/main.tsx
-mv src/vite-env.d.ts frontend/vite-env.d.ts
-rmdir src
+# 如果模板生成在 src/ 则移动，否则手动创建 frontend/ 结构
+if [ -d src ]; then
+  mv src/App.tsx frontend/App.tsx 2>/dev/null || true
+  mv src/App.css frontend/App.css 2>/dev/null || true
+  mv src/main.tsx frontend/main.tsx 2>/dev/null || true
+  mv src/vite-env.d.ts frontend/vite-env.d.ts 2>/dev/null || true
+  rm -rf src
+fi
 # 调整 vite.config.ts 中的 root 指向 frontend/
 ```
 
 - [ ] **Step 3: 安装所有前端依赖**
 
 ```bash
-cd d:\code\AstroOrigin\companion-app
+cd /d/code/AstroOrigin
 pnpm add @heroui/react@^2.8.0 framer-motion@^11.0.0 \
   react-router-dom@^6.28.0 \
   zustand@^5.0.0 \
@@ -223,7 +234,7 @@ tauri-build = { version = "2", features = [] }
 - [ ] **Step 8: 验证项目能编译运行**
 
 ```bash
-cd d:\code\AstroOrigin\companion-app
+cd /d/code/AstroOrigin
 pnpm tauri dev
 ```
 预期：空白 Tauri 窗口打开，无错误。
@@ -513,7 +524,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
 - [ ] **Step 8: 验证前端路由和布局**
 
 ```bash
-cd d:\code\AstroOrigin\companion-app
+cd /d/code/AstroOrigin
 pnpm tauri dev
 ```
 预期：Tauri 窗口显示导航栏（星原手记 + 总览/抽卡记录/游戏时长/截图 链接 + 原神/星铁切换 pill），内容区显示"总览"页面，点击导航可切换到抽卡记录页面。
@@ -815,7 +826,7 @@ pub fn run() {
 - [ ] **Step 6: 验证后端编译**
 
 ```bash
-cd d:\code\AstroOrigin\companion-app
+cd /d/code/AstroOrigin
 cargo build --manifest-path src-tauri/Cargo.toml
 ```
 预期：编译通过，无 warning。
@@ -1216,7 +1227,7 @@ export function Gacha() {
 - [ ] **Step 9: 验证前后端联调**
 
 ```bash
-cd d:\code\AstroOrigin\companion-app
+cd /d/code/AstroOrigin
 pnpm tauri dev
 ```
 预期：应用启动，切换到抽卡记录页面显示统计卡片（数据为空）和"暂无记录"表格。
@@ -1403,7 +1414,7 @@ pub fn normalize_item_name(name: &str, normalizations: &[(&str, &str)]) -> Strin
 - [ ] **Step 4: 验证编译**
 
 ```bash
-cd d:\code\AstroOrigin\companion-app
+cd /d/code/AstroOrigin
 cargo build --manifest-path src-tauri/Cargo.toml
 ```
 预期：编译通过，windows crate 相关代码可能需要适配实际 API（windows-rs 的异步调用模式可能不同，需按实际编译错误调整）。
@@ -1569,7 +1580,7 @@ commands::gacha::import_gacha_screenshot,
 - [ ] **Step 3: 验证编译**
 
 ```bash
-cd d:\code\AstroOrigin\companion-app
+cd /d/code/AstroOrigin
 cargo build --manifest-path src-tauri/Cargo.toml
 ```
 预期：编译通过。
@@ -1694,7 +1705,7 @@ export function Overview() {
 - [ ] **Step 2: 验证页面显示**
 
 ```bash
-cd d:\code\AstroOrigin\companion-app
+cd /d/code/AstroOrigin
 pnpm tauri dev
 ```
 预期：总览页显示统计卡片（空数据），两个游戏卡片可点击切换。
