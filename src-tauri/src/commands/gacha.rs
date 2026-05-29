@@ -3,7 +3,6 @@ use crate::db::DbPool;
 use crate::error::TauriResult;
 use crate::game::GameKind;
 use anyhow::Context;
-use image::GenericImageView;
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -160,85 +159,53 @@ pub async fn import_gacha_screenshot(
 
     let result = tokio::task::spawn_blocking(move || {
         let conn = pool.get().map_err(|e| format!("DB error: {}", e))?;
-        let img = image::load_from_memory(&img_bytes)
-            .map_err(|e| format!("Image decode error: {}", e))?;
-        let (w, h) = img.dimensions();
 
-        // Crop title region for OCR detection
-        let tr = features.title_region;
-        let title_crop = img.crop_imm(
-            (w as f64 * tr.0) as u32,
-            (h as f64 * tr.1) as u32,
-            (w as f64 * tr.2) as u32,
-            (h as f64 * tr.3) as u32,
-        );
-        let mut title_buf = std::io::Cursor::new(Vec::new());
-        if title_crop
-            .write_to(&mut title_buf, image::ImageFormat::Png)
-            .is_err()
-        {
-            return Err("Failed to encode title region".to_string());
+        // 全图 OCR，不裁剪
+        eprintln!("[IMPORT] Running full-image OCR ({} bytes)...", img_bytes.len());
+        let all_lines = crate::ocr::ocr_image(&img_bytes)
+            .map_err(|e| format!("OCR failed: {}", e))?;
+
+        eprintln!("[IMPORT] OCR returned {} lines", all_lines.len());
+        for (i, line) in all_lines.iter().enumerate() {
+            eprintln!("[IMPORT]   Line {}: {:?}", i, line);
         }
 
-        // 保存原始裁剪区域供调试（不加 OCR 预处理）
-        eprintln!("[IMPORT] Crop region: img={}x{}, crop=({},{},{},{}) ratio={:?}",
-            w, h,
-            (w as f64 * tr.0) as u32, (h as f64 * tr.1) as u32,
-            (w as f64 * tr.2) as u32, (h as f64 * tr.3) as u32,
-            tr);
-        let debug_crop_path = std::env::temp_dir().join("astrorigin_raw_crop.png");
-        let _ = std::fs::write(&debug_crop_path, title_buf.get_ref());
-        eprintln!("[IMPORT] Raw crop saved to {:?} ({} bytes)", debug_crop_path, title_buf.get_ref().len());
-
-        let title_lines = crate::ocr::ocr_image(title_buf.get_ref())
-            .map_err(|e| format!("Title OCR failed: {}", e))?;
-
+        // 检查是否有标题关键词
         let has_title = features
             .title_keywords
             .iter()
-            .any(|kw| title_lines.iter().any(|line| line.contains(kw)));
+            .any(|kw| all_lines.iter().any(|line| line.contains(kw)));
 
         if !has_title {
             return Err("截图不是抽卡记录页面，请确认截图包含标题".to_string());
         }
 
-        // Split into rows and OCR each
-        let rr = features.row_region;
-        let row_height = (h as f64 * rr.4) as u32;
-        let row_y_start = (h as f64 * rr.1) as u32;
-        let row_x = (w as f64 * rr.0) as u32;
-        let row_w = (w as f64 * rr.2) as u32;
-        let max_rows = 20;
+        // 找到关键词所在行之后的内容，每 N 行为一条记录
+        // 跳过标题行前后的干扰行，从关键词行后开始解析
+        let title_idx = all_lines.iter().position(|l| {
+            features.title_keywords.iter().any(|kw| l.contains(kw))
+        }).unwrap_or(0);
+
+        let data_lines: Vec<&String> = all_lines.iter().skip(title_idx + 1).collect();
+        eprintln!("[IMPORT] Data lines after title: {}", data_lines.len());
 
         let mut imported = 0usize;
         let mut duplicates = 0usize;
         let kind_str = &game_kind_clone;
 
-        for i in 0..max_rows {
-            let y = row_y_start + (i as u32) * row_height;
-            if y + row_height > h {
-                break;
-            }
+        // 每 2~3 行为一条记录（日期、物品名、可能还有额外行）
+        let mut i = 0;
+        while i + 1 < data_lines.len() {
+            let record_date = data_lines[i].trim().to_string();
+            let item_line = &data_lines[i + 1];
 
-            let row_crop = img.crop_imm(row_x, y, row_w, row_height);
-            let mut buf = std::io::Cursor::new(Vec::new());
-            if row_crop.write_to(&mut buf, image::ImageFormat::Png).is_err() {
+            // 检查是否是日期格式（跳过非数据行）
+            if record_date.len() < 6 && !record_date.contains('-') {
+                i += 1;
                 continue;
             }
 
-            let lines = match crate::ocr::ocr_image(buf.get_ref()) {
-                Ok(l) => l,
-                Err(_) => continue,
-            };
-
-            if lines.len() < 2 {
-                continue;
-            }
-
-            let record_date = lines[0].trim().to_string();
-            let item_line = &lines[1];
-            let item_name =
-                crate::ocr::normalize_item_name(item_line, features.name_normalizations);
+            let item_name = crate::ocr::normalize_item_name(item_line, features.name_normalizations);
 
             let star_rating = if item_line.contains('5') || item_line.contains('五') {
                 5
@@ -246,7 +213,7 @@ pub async fn import_gacha_screenshot(
                 4
             };
 
-            // Dedup check
+            // 去重
             let exists: bool = conn
                 .query_row(
                     "SELECT COUNT(*) > 0 FROM gacha_records
@@ -258,19 +225,18 @@ pub async fn import_gacha_screenshot(
 
             if exists {
                 duplicates += 1;
-                continue;
+            } else {
+                let is_won = star_rating < 5;
+                conn.execute(
+                    "INSERT INTO gacha_records (game_kind, item_name, star_rating, record_date, is_won)
+                     VALUES (?, ?, ?, ?, ?)",
+                    rusqlite::params![kind_str, &item_name, star_rating, &record_date, is_won],
+                )
+                .map_err(|e| format!("Insert error: {}", e))?;
+                imported += 1;
             }
 
-            let is_won = star_rating < 5;
-
-            conn.execute(
-                "INSERT INTO gacha_records (game_kind, item_name, star_rating, record_date, is_won)
-                 VALUES (?, ?, ?, ?, ?)",
-                rusqlite::params![kind_str, &item_name, star_rating, &record_date, is_won],
-            )
-            .map_err(|e| format!("Insert error: {}", e))?;
-
-            imported += 1;
+            i += 2; // 下一条记录
         }
 
         Ok(GachaImportResult { imported, duplicates })
