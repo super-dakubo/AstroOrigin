@@ -1,8 +1,9 @@
-import { useTauriQuery } from '../hooks/useTauriQuery';
+import { useTauriQuery, useTauriMutation } from '../hooks/useTauriQuery';
 import { useGameStore } from '../stores/gameStore';
 import { StatCard } from '../components/StatCard';
 import { LuckChart } from '../components/LuckChart';
 import { RecordTable } from '../components/RecordTable';
+import { open } from '@tauri-apps/plugin-dialog';
 
 interface GachaStats {
   totalPulls: number;
@@ -25,13 +26,35 @@ export function Gacha() {
   const currentGame = useGameStore((s) => s.currentGame);
   const theme = useGameStore((s) => s.theme);
 
-  const { data: stats } = useTauriQuery<GachaStats>('get_gacha_stats', {
+  const { data: stats, refetch: refetchStats } = useTauriQuery<GachaStats>('get_gacha_stats', {
     gameKind: currentGame,
   });
-  const { data: records } = useTauriQuery<GachaRecord[]>('get_gacha_records', {
+  const { data: records, refetch: refetchRecords } = useTauriQuery<GachaRecord[]>('get_gacha_records', {
     gameKind: currentGame,
     limit: 200,
   });
+
+  const importMutation = useTauriMutation<{ imported: number; duplicates: number }, { imagePath: string; gameKind: string }>('import_gacha_screenshot');
+
+  const handleImport = async () => {
+    const selected = await open({
+      multiple: false,
+      filters: [{ name: '截图', extensions: ['png', 'jpg', 'jpeg', 'bmp'] }],
+    });
+    if (!selected) return;
+
+    try {
+      const result = await importMutation.mutateAsync({
+        imagePath: selected,
+        gameKind: currentGame,
+      });
+      refetchStats();
+      refetchRecords();
+      alert(`导入成功！新增 ${result.imported} 条，跳过 ${result.duplicates} 条重复`);
+    } catch (e) {
+      alert(`导入失败：${e}`);
+    }
+  };
 
   const chartData = (records ?? [])
     .filter((r) => r.starRating === 5)
@@ -58,10 +81,12 @@ export function Gacha() {
           </p>
         </div>
         <button
-          className="px-4 py-2 text-sm text-white font-medium rounded-lg transition-colors"
+          onClick={handleImport}
+          disabled={importMutation.isPending}
+          className="px-4 py-2 text-sm text-white font-medium rounded-lg transition-colors disabled:opacity-50"
           style={{ background: theme.primary }}
         >
-          + 导入截图
+          {importMutation.isPending ? '导入中...' : '+ 导入截图'}
         </button>
       </div>
 
