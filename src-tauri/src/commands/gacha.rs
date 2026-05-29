@@ -180,6 +180,16 @@ pub async fn import_gacha_screenshot(
             return Err("Failed to encode title region".to_string());
         }
 
+        // 保存原始裁剪区域供调试（不加 OCR 预处理）
+        eprintln!("[IMPORT] Crop region: img={}x{}, crop=({},{},{},{}) ratio={:?}",
+            w, h,
+            (w as f64 * tr.0) as u32, (h as f64 * tr.1) as u32,
+            (w as f64 * tr.2) as u32, (h as f64 * tr.3) as u32,
+            tr);
+        let debug_crop_path = std::env::temp_dir().join("astrorigin_raw_crop.png");
+        let _ = std::fs::write(&debug_crop_path, title_buf.get_ref());
+        eprintln!("[IMPORT] Raw crop saved to {:?} ({} bytes)", debug_crop_path, title_buf.get_ref().len());
+
         let title_lines = crate::ocr::ocr_image(title_buf.get_ref())
             .map_err(|e| format!("Title OCR failed: {}", e))?;
 
