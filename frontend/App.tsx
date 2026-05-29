@@ -1,18 +1,27 @@
-import { useState } from "react";
+import { HashRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { HeroUIProvider } from '@heroui/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { Layout } from './components/Layout';
+import { Overview } from './pages/Overview';
+import { Gacha } from './pages/Gacha';
+import { ROUTES } from './lib/constants';
 
-function App() {
-  const [count, setCount] = useState(0);
+const queryClient = new QueryClient();
 
+export default function App() {
   return (
-    <div>
-      <h1>星原手记</h1>
-      <div>
-        <button onClick={() => setCount((c) => c + 1)}>
-          Count: {count}
-        </button>
-      </div>
-    </div>
+    <HeroUIProvider>
+      <QueryClientProvider client={queryClient}>
+        <HashRouter>
+          <Layout>
+            <Routes>
+              <Route path={ROUTES.OVERVIEW} element={<Overview />} />
+              <Route path={ROUTES.GACHA} element={<Gacha />} />
+              <Route path="*" element={<Navigate to={ROUTES.OVERVIEW} replace />} />
+            </Routes>
+          </Layout>
+        </HashRouter>
+      </QueryClientProvider>
+    </HeroUIProvider>
   );
 }
-
-export default App;
