@@ -166,24 +166,29 @@ pub async fn import_gacha_screenshot(
             .map_err(|e| format!("OCR failed: {}", e))?;
 
         eprintln!("[IMPORT] OCR returned {} lines", all_lines.len());
+
+        // OCR 会在中文字间加空格，全部去掉
+        let all_lines: Vec<String> = all_lines.iter()
+            .map(|l| l.chars().filter(|c| !c.is_whitespace()).collect())
+            .collect();
+
         for (i, line) in all_lines.iter().enumerate() {
             eprintln!("[IMPORT]   Line {}: {:?}", i, line);
         }
 
-        // 检查是否有标题关键词（OCR 会在中文字间加空格，去掉再比对）
-        let line_matches_kw = |line: &str| {
-            let compact: String = line.chars().filter(|c| !c.is_whitespace()).collect();
-            features.title_keywords.iter().any(|kw| compact.contains(kw))
-        };
-
-        let has_title = all_lines.iter().any(|l| line_matches_kw(l));
+        // 检查是否有标题关键词
+        let has_title = all_lines.iter().any(|line| {
+            features.title_keywords.iter().any(|kw| line.contains(kw))
+        });
 
         if !has_title {
             return Err("截图不是抽卡记录页面，请确认截图包含标题".to_string());
         }
 
         // 找到关键词所在行之后的内容
-        let title_idx = all_lines.iter().position(|l| line_matches_kw(l)).unwrap_or(0);
+        let title_idx = all_lines.iter().position(|l| {
+            features.title_keywords.iter().any(|kw| l.contains(kw))
+        }).unwrap_or(0);
 
         let data_lines: Vec<&String> = all_lines.iter().skip(title_idx + 1).collect();
         eprintln!("[IMPORT] Data lines after title: {}", data_lines.len());
