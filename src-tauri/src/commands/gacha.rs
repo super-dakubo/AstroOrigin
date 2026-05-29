@@ -216,15 +216,24 @@ pub async fn import_gacha_screenshot(
         let col_bounds: Vec<f64> = if let Some(hi) = header_idx {
             let row = &rows[hi];
             // 拼合表头文本，记录每字的 X
+            // 拼合表头文本，记录每字的 X
+            // 注意：flat_map 将每个 word 的每个字拆开，所以 concat.len() = 全文字数
             let concat: Vec<(f64, char)> = row.iter()
                 .flat_map(|w| w.text.chars().map(move |c| (w.x, c)))
                 .filter(|(_, c)| !c.is_whitespace())
                 .collect();
             let full_text: String = concat.iter().map(|(_, c)| c).collect();
-            // 在拼合文本中找"对象类型""对象名称""跃迁类型""跃迁时间"
+            // 在拼合文本中找标签的位置
+            // full_text.find() 返回的是字节索引，concat 需要字符索引
+            // 用 char_indices 逐个字查找匹配
             let labels = ["对象类型", "对象名称", "跃迁类型", "跃迁时间"];
+            let char_positions: Vec<usize> = full_text.char_indices().map(|(i, _)| i).collect();
             let mut boundaries: Vec<f64> = labels.iter().filter_map(|label| {
-                full_text.find(label).map(|pos| concat[pos].0)
+                full_text.find(label).and_then(|byte_pos| {
+                    // 将字节索引转为字符索引
+                    let char_idx = char_positions.iter().position(|&bp| bp == byte_pos)?;
+                    concat.get(char_idx).map(|(x, _)| *x)
+                })
             }).collect();
             boundaries.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
             boundaries.push(f64::MAX);
@@ -267,36 +276,6 @@ pub async fn import_gacha_screenshot(
         }
 
         // ── 6. 后处理 & 入库 ──
-        fn normalize_date(s: &str) -> String {
-            let s = s.replace('·', "-").replace('：', ":")
-                .chars().filter(|c| !c.is_whitespace()).collect::<String>();
-            // 找第一个 : 的位置（用 char 索引安全处理中文）
-            let colon_idx = s.chars().position(|c| c == ':');
-            if let Some(idx) = colon_idx {
-                if idx > 4 {
-                    let date_part: String = s.chars().take(idx - 2).collect();
-                    let time_part: String = s.chars().skip(idx - 2).collect();
-                    return format!("{} {}", date_part.trim(), time_part.trim());
-                }
-            }
-            s
-        }
-
-        fn fuzzy_match_name(ocr: &str) -> String {
-            let ocr_clean: Vec<char> = ocr.chars().filter(|&c| !c.is_whitespace() && c != '·' && c != '-' && c != ':' && c != '：').collect();
-            if ocr_clean.is_empty() { return ocr.to_string(); }
-            // 在已知列表中找最长公共子串匹配
-            let mut best = ocr.to_string();
-            let mut best_len = 0usize;
-            for &known in STARRAIL_NAMES {
-                // 简单前缀/包含匹配
-                if ocr.contains(known) || known.contains(&ocr_clean.iter().collect::<String>().as_str()) {
-                    if known.len() > best_len { best = known.to_string(); best_len = known.len(); }
-                }
-            }
-            best
-        }
-
         let mut imported = 0usize;
         let mut duplicates = 0usize;
         let kind_str = &game_kind_clone;
@@ -361,4 +340,130 @@ pub async fn delete_gacha_record(
     })
     .await
     .map_err(|e| format!("Task join error: {}", e))?
+}
+
+// ── 工具函数（模块级别，方便测试） ──
+fn normalize_date(s: &str) -> String {
+    let s = s.replace('·', "-").replace('：', ":")
+        .chars().filter(|c| !c.is_whitespace()).collect::<String>();
+    let colon_idx = s.chars().position(|c| c == ':');
+    if let Some(idx) = colon_idx {
+        if idx > 4 {
+            let date_part: String = s.chars().take(idx - 2).collect();
+            let time_part: String = s.chars().skip(idx - 2).collect();
+            return format!("{} {}", date_part.trim(), time_part.trim());
+        }
+    }
+    s
+}
+
+fn fuzzy_match_name(ocr: &str) -> String {
+    let ocr_clean: String = ocr.chars().filter(|&c| !c.is_whitespace() && c != '·' && c != '-' && c != ':' && c != '：').collect();
+    if ocr_clean.is_empty() { return ocr.to_string(); }
+    let mut best = ocr.to_string();
+    let mut best_len = 0usize;
+    for &known in STARRAIL_NAMES {
+        if ocr.contains(known) || known.contains(&ocr_clean) {
+            if known.len() > best_len { best = known.to_string(); best_len = known.len(); }
+        }
+    }
+    best
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::ocr::OcrWord;
+
+    /// 模拟 OCR 输出：基于用户截图的实际数据
+    fn mock_starrail_words() -> Vec<OcrWord> {
+        // 按行/列排布，x 从左到右递增，y 从上到下递增
+        // 每行 y 间距 ~70px，每列 x 间距 ~140px
+        let mut words = Vec::new();
+        let rows = [
+            // (x, y, text) — 头部信息行
+            (50.0, 10.0, "0"), (80.0, 10.0, "0"), (110.0, 10.0, "0"),
+            // 历史记录标题
+            (20.0, 80.0, "查看详情"), (200.0, 80.0, "历史记录"),
+            // 说明文字
+            (20.0, 150.0, "可在本页面查询最近6个月的跃迁历史记录"),
+            // 表头行
+            (30.0, 220.0, "对"), (50.0, 220.0, "象"), (70.0, 220.0, "类"), (90.0, 220.0, "型"),
+            (180.0, 220.0, "对"), (200.0, 220.0, "象"), (220.0, 220.0, "名"), (240.0, 220.0, "称"),
+            (350.0, 220.0, "跃"), (370.0, 220.0, "迁"), (390.0, 220.0, "类"), (410.0, 220.0, "型"),
+            (500.0, 220.0, "跃"), (520.0, 220.0, "迁"), (540.0, 220.0, "时"), (560.0, 220.0, "间"),
+            // 数据行 1：光锥 | 嘉果 | 角色活动跃迁 | 2026·05·27 23:05:36
+            (30.0, 290.0, "光"), (50.0, 290.0, "锥"),
+            (180.0, 290.0, "嘉"), (200.0, 290.0, "果"),
+            (350.0, 290.0, "角色活动跃迁"),
+            (500.0, 290.0, "2026·05·27"), (570.0, 290.0, "23:05:36"),
+            // 数据行 2：光锥 | 轮契 | 角色活动跃迁 | 2026·05·26 19:56:00
+            (30.0, 360.0, "光"), (50.0, 360.0, "锥"),
+            (180.0, 360.0, "轮"), (200.0, 360.0, "契"),
+            (350.0, 360.0, "角色活动跃迁"),
+            (500.0, 360.0, "2026·05·26"), (570.0, 360.0, "19:56:00"),
+            // 数据行 3：光锥 | 齐颂 | 角色活动跃迁 | 2026·05·25 22:18:29
+            (30.0, 430.0, "光"), (50.0, 430.0, "锥"),
+            (180.0, 430.0, "齐"), (200.0, 430.0, "颂"),
+            (350.0, 430.0, "角色活动跃迁"),
+            (500.0, 430.0, "2026·05·25"), (570.0, 430.0, "22:18:29"),
+            // 数据行 4：光锥 | 蕃息 | 角色活动跃迁 | 2026·05·24 10:28:49
+            (30.0, 500.0, "光"), (50.0, 500.0, "锥"),
+            (180.0, 500.0, "蕃"), (200.0, 500.0, "息"),
+            (350.0, 500.0, "角色活动跃迁"),
+            (500.0, 500.0, "2026·05·24"), (570.0, 500.0, "10:28:49"),
+            // 数据行 5：角色 | 素裳 | 角色活动跃迁 | 2026·05·24 10:28:42
+            (30.0, 570.0, "角"), (50.0, 570.0, "色"),
+            (180.0, 570.0, "素"), (200.0, 570.0, "裳"),
+            (350.0, 570.0, "角色活动跃迁"),
+            (500.0, 570.0, "2026·05·24"), (570.0, 570.0, "10:28:42"),
+            // 页码
+            (500.0, 1000.0, "1"),
+        ];
+        for &(x, y, text) in &rows {
+            words.push(OcrWord {
+                text: text.to_string(),
+                x, y,
+                width: text.len() as f64 * 14.0,
+                height: 20.0,
+            });
+        }
+        words
+    }
+
+    #[test]
+    fn test_normalize_date() {
+        let result = super::normalize_date("2026·05·2723：05：36");
+        assert_eq!(result, "2026-05-27 23:05:36");
+    }
+
+    #[test]
+    fn test_fuzzy_match() {
+        let result = super::fuzzy_match_name("轮契");
+        assert!(!result.is_empty());
+    }
+
+    #[test]
+    fn test_clustering() {
+        let words = mock_starrail_words();
+        let h = 1080.0;
+        // 过滤 Y
+        let top = h * 0.15;
+        let bot = h * 0.85;
+        let filtered: Vec<_> = words.into_iter()
+            .filter(|w| (w.y + w.height / 2.0) > top && (w.y + w.height / 2.0) < bot)
+            .collect();
+        // 行聚类
+        let mut rows: Vec<Vec<OcrWord>> = Vec::new();
+        'outer: for word in filtered {
+            let cy = word.y + word.height / 2.0;
+            for r in rows.iter_mut() {
+                let ry = r[0].y + r[0].height / 2.0;
+                if (cy - ry).abs() < 30.0 { r.push(word); continue 'outer; }
+            }
+            rows.push(vec![word]);
+        }
+        // 忽略标题/说明行，只算数据行（含表头）
+        assert!(rows.len() >= 6, "Expected 6+ rows, got {}", rows.len());
+    }
+
 }
