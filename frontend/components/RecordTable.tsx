@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
+import { Pencil } from 'lucide-react';
 
 interface GachaRecord {
   id: number;
@@ -13,6 +14,7 @@ interface RecordTableProps {
   records: GachaRecord[];
   onDelete?: (id: number) => void;
   onSave?: (id: number, data: { itemName: string; starRating: number; recordDate: string; isWon: boolean }) => void;
+  knownNames?: string[];
 }
 
 type EditState = {
@@ -106,7 +108,7 @@ export function RecordTable({ records, onDelete, onSave }: RecordTableProps) {
                     checked={editing.isWon}
                     onChange={(e) => setEditing({ ...editing, isWon: e.target.checked })}
                   />
-                  {editing.isWon ? '欧 ✓' : '歪了'}
+                  {editing.isWon ? '欧' : '歪'}
                 </label>
                 <div className="flex gap-1">
                   <button onClick={saveEdit} className="text-green-600 hover:text-green-700 text-xs font-bold" title="保存">✓</button>
@@ -119,19 +121,26 @@ export function RecordTable({ records, onDelete, onSave }: RecordTableProps) {
           return (
             <div
               key={r.id}
-              className="grid grid-cols-[1.5fr_3fr_80px_80px_48px] gap-2 px-4 py-2.5 text-sm items-center cursor-default"
-              onDoubleClick={() => startEdit(r)}
-              title="双击编辑"
+              className="group grid grid-cols-[1.5fr_3fr_80px_80px_48px] gap-2 px-4 py-2.5 text-sm items-center"
             >
               <span className={`${r.recordDate ? 'text-gray-900' : 'text-gray-300 italic'}`}>
                 {r.recordDate || '未识别'}
               </span>
-              <span className={`font-medium ${
+              <span className={`font-medium flex items-center gap-1.5 ${
                 r.starRating === 5 ? 'text-amber-500' :
                 r.starRating === 4 ? 'text-purple-500' :
                 r.itemName ? 'text-gray-900' : 'text-gray-300 italic'
               }`}>
                 {r.itemName || '未识别'}
+                {r.itemName && (
+                  <button
+                    onClick={() => startEdit(r)}
+                    className="opacity-0 group-hover:opacity-40 hover:opacity-100 transition-opacity"
+                    title="编辑"
+                  >
+                    <Pencil className="w-3 h-3" />
+                  </button>
+                )}
               </span>
               <span className={
                 r.starRating === 5 ? 'text-amber-500 font-bold' :
@@ -150,7 +159,7 @@ export function RecordTable({ records, onDelete, onSave }: RecordTableProps) {
               </span>
               <button
                 onClick={() => onDelete?.(r.id)}
-                className="text-gray-300 hover:text-red-500 transition-colors text-xs"
+                className="text-gray-300 hover:text-red-500 transition-colors text-xs opacity-0 group-hover:opacity-100"
                 title="删除"
               >
                 ✕
