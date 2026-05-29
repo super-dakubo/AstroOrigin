@@ -215,23 +215,18 @@ pub async fn import_gacha_screenshot(
 
         let col_bounds: Vec<f64> = if let Some(hi) = header_idx {
             let row = &rows[hi];
-            // 取所有词的 X 坐标
-            let xs: Vec<f64> = row.iter().map(|w| w.x).collect();
-            // 计算词间间隙（下一个词x - 当前词x+width）
-            let mut gaps: Vec<(usize, f64)> = row.windows(2).enumerate().map(|(i, pair)| {
-                let gap = pair[1].x - (pair[0].x + pair[0].width);
-                (i, gap)
-            }).filter(|(_, g)| *g > 0.0).collect();
-            gaps.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-            // 取最大的3个间隙作为列边界
-            let split_indices: Vec<usize> = gaps.iter().take(3).map(|(i, _)| *i).collect();
-            let mut boundaries: Vec<f64> = vec![0.0];
-            for &si in split_indices.iter() {
-                if si < row.len() - 1 {
-                    let b = (row[si].x + row[si].width + row[si + 1].x) / 2.0;
-                    boundaries.push(b);
-                }
-            }
+            // 拼合表头文本，记录每字的 X
+            let concat: Vec<(f64, char)> = row.iter()
+                .flat_map(|w| w.text.chars().map(move |c| (w.x, c)))
+                .filter(|(_, c)| !c.is_whitespace())
+                .collect();
+            let full_text: String = concat.iter().map(|(_, c)| c).collect();
+            // 在拼合文本中找"对象类型""对象名称""跃迁类型""跃迁时间"
+            let labels = ["对象类型", "对象名称", "跃迁类型", "跃迁时间"];
+            let mut boundaries: Vec<f64> = labels.iter().filter_map(|label| {
+                full_text.find(label).map(|pos| concat[pos].0)
+            }).collect();
+            boundaries.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
             boundaries.push(f64::MAX);
             boundaries
         } else {
@@ -243,7 +238,7 @@ pub async fn import_gacha_screenshot(
         eprintln!("[WARP] Column boundaries: {:?}", col_bounds);
 
         // ── 5. 遍历数据行，按 X 中心点分列 ──
-        let skip_keywords = ["历史记录", "可在本页面", "对象类型", "跃迁记录", "跃迁", "当前为"];
+        let skip_keywords = ["历史记录", "可在本页面", "对象类型", "跃迁记录", "当前为"];
         let mut parsed: Vec<Vec<String>> = Vec::new();
         for (ri, row) in rows.iter().enumerate() {
             if header_idx.is_some() && ri == header_idx.unwrap() { continue; }
@@ -273,11 +268,15 @@ pub async fn import_gacha_screenshot(
 
         // ── 6. 后处理 & 入库 ──
         fn normalize_date(s: &str) -> String {
-            let s = s.replace('·', "-").replace('：', ":");
-            if let Some(pos) = s.find(':') {
-                if pos >= 3 {
-                    let (d, t) = s.split_at(pos - 2);
-                    return format!("{} {}", d.trim(), t.trim());
+            let s = s.replace('·', "-").replace('：', ":")
+                .chars().filter(|c| !c.is_whitespace()).collect::<String>();
+            // 找第一个 : 的位置（用 char 索引安全处理中文）
+            let colon_idx = s.chars().position(|c| c == ':');
+            if let Some(idx) = colon_idx {
+                if idx > 4 {
+                    let date_part: String = s.chars().take(idx - 2).collect();
+                    let time_part: String = s.chars().skip(idx - 2).collect();
+                    return format!("{} {}", date_part.trim(), time_part.trim());
                 }
             }
             s
