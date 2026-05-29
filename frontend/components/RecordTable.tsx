@@ -27,10 +27,10 @@ type EditState = {
 
 export function RecordTable({ records, onDelete, onSave }: RecordTableProps) {
   const [editing, setEditing] = useState<EditState>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const nameRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    if (editing) inputRef.current?.focus();
+    if (editing) nameRef.current?.focus();
   }, [editing]);
 
   const startEdit = (r: GachaRecord) => {
@@ -84,13 +84,13 @@ export function RecordTable({ records, onDelete, onSave }: RecordTableProps) {
                 className="grid grid-cols-[1.5fr_3fr_80px_80px_48px] gap-2 px-4 py-2 text-sm items-center bg-blue-50"
               >
                 <input
-                  ref={inputRef}
                   className="w-full px-2 py-1 border border-blue-300 rounded text-sm"
                   value={editing.recordDate}
                   onChange={(e) => setEditing({ ...editing, recordDate: e.target.value })}
                   onKeyDown={(e) => e.key === 'Enter' ? saveEdit() : e.key === 'Escape' ? cancelEdit() : undefined}
                 />
                 <input
+                  ref={nameRef}
                   className="w-full px-2 py-1 border border-blue-300 rounded text-sm"
                   value={editing.itemName}
                   onChange={(e) => setEditing({ ...editing, itemName: e.target.value })}
