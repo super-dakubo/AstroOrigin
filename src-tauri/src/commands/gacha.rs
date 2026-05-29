@@ -305,28 +305,20 @@ pub async fn import_gacha_screenshot(
             // 星数：提示性赋值，用户可手动改
             let star_rating = if obj_type == "角色" { 4 } else { 3 };
 
-            // 温和去重：只有名称 + 日期都非空才去重
-            let exists = if !item_name.is_empty() && !record_date.is_empty() {
-                conn.query_row(
-                    "SELECT COUNT(*) > 0 FROM gacha_records
-                     WHERE game_kind = ? AND item_name = ? AND record_date = ? AND star_rating = ?",
-                    rusqlite::params![kind_str, &item_name, &record_date, star_rating],
-                    |row| row.get(0),
-                ).unwrap_or(false)
-            } else {
-                false
-            };
-
-            if exists {
-                duplicates += 1;
-            } else {
-                conn.execute(
-                    "INSERT INTO gacha_records (game_kind, item_name, star_rating, record_date, is_won)
+            // 去重：相同 game_kind + item_name + record_date 视为同一条
+            if !item_name.is_empty() && !record_date.is_empty() {
+                let changed = conn.execute(
+                    "INSERT OR IGNORE INTO gacha_records (game_kind, item_name, star_rating, record_date, is_won)
                      VALUES (?, ?, ?, ?, ?)",
                     rusqlite::params![kind_str, &item_name, star_rating, &record_date, star_rating < 5],
                 ).map_err(|e| format!("Insert error: {}", e))?;
-                imported += 1;
-                eprintln!("[IMPORT]   Imported: '{}' ({}★, {} | {})", item_name, star_rating, obj_type, record_date);
+                if changed > 0 {
+                    imported += 1;
+                    eprintln!("[IMPORT]   Imported: '{}' ({}★, {} | {})", item_name, star_rating, obj_type, record_date);
+                } else {
+                    duplicates += 1;
+                    eprintln!("[IMPORT]   Duplicate skipped: '{}' | {}", item_name, record_date);
+                }
             }
         }
 
@@ -349,11 +341,17 @@ pub async fn update_gacha_record(
     let pool = pool.inner().clone();
     tokio::task::spawn_blocking(move || {
         let conn = pool.get().map_err(|e| format!("DB error: {}", e))?;
-        conn.execute(
+        let result = conn.execute(
             "UPDATE gacha_records SET item_name = ?, star_rating = ?, record_date = ?, is_won = ? WHERE id = ?",
             rusqlite::params![item_name, star_rating, record_date, is_won, id],
-        ).map_err(|e| format!("Update error: {}", e))?;
-        Ok(true)
+        );
+        match result {
+            Ok(_) => Ok(true),
+            Err(rusqlite::Error::SqliteFailure(e, _)) if e.code == rusqlite::ErrorCode::ConstraintViolation => {
+                Err("保存失败：相同日期+物品的记录已存在".to_string())
+            }
+            Err(e) => Err(format!("Update error: {}", e)),
+        }
     })
     .await
     .map_err(|e| format!("Task join error: {}", e))?

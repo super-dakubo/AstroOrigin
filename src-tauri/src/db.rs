@@ -27,6 +27,9 @@ pub fn init_pool(db_path: &str) -> Result<DbPool> {
         CREATE INDEX IF NOT EXISTS idx_gacha_game_date
             ON gacha_records(game_kind, record_date);
 
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_gacha_dedup
+            ON gacha_records(game_kind, item_name, record_date);
+
         CREATE TABLE IF NOT EXISTS playtime_records (
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
             game_kind   TEXT NOT NULL,
