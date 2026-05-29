@@ -292,6 +292,28 @@ pub async fn import_gacha_screenshot(
 }
 
 #[tauri::command]
+pub async fn update_gacha_record(
+    pool: tauri::State<'_, DbPool>,
+    id: i64,
+    item_name: String,
+    star_rating: i32,
+    record_date: String,
+    is_won: bool,
+) -> TauriResult<bool> {
+    let pool = pool.inner().clone();
+    tokio::task::spawn_blocking(move || {
+        let conn = pool.get().map_err(|e| format!("DB error: {}", e))?;
+        conn.execute(
+            "UPDATE gacha_records SET item_name = ?, star_rating = ?, record_date = ?, is_won = ? WHERE id = ?",
+            rusqlite::params![item_name, star_rating, record_date, is_won, id],
+        ).map_err(|e| format!("Update error: {}", e))?;
+        Ok(true)
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
+}
+
+#[tauri::command]
 pub async fn delete_gacha_record(
     pool: tauri::State<'_, DbPool>,
     id: i64,

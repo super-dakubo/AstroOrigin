@@ -36,6 +36,7 @@ export function Gacha() {
 
   const importMutation = useTauriMutation<{ imported: number; duplicates: number }, { imagePath: string; gameKind: string }>('import_gacha_screenshot');
   const deleteMutation = useTauriMutation<boolean, { id: number }>('delete_gacha_record');
+  const updateMutation = useTauriMutation<boolean, { id: number; itemName: string; starRating: number; recordDate: string; isWon: boolean }>('update_gacha_record');
 
   const handleImport = async () => {
     const selected = await open({
@@ -118,6 +119,11 @@ export function Gacha() {
         records={records ?? []}
         onDelete={async (id) => {
           await deleteMutation.mutateAsync({ id });
+          refetchStats();
+          refetchRecords();
+        }}
+        onSave={async (id, data) => {
+          await updateMutation.mutateAsync({ id, ...data });
           refetchStats();
           refetchRecords();
         }}
