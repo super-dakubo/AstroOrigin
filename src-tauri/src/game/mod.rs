@@ -42,7 +42,7 @@ impl GameKind {
     pub fn features(&self) -> GameFeatures {
         match self {
             Self::Genshin => GameFeatures {
-                title_region: (0.03, 0.01, 0.5, 0.10),
+                title_region: (0.03, 0.04, 0.5, 0.08),
                 row_region: (0.05, 0.12, 0.9, 0.8, 0.07),
                 title_keywords: &["历史记录"],
                 name_normalizations: &[
