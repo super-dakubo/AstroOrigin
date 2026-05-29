@@ -377,18 +377,40 @@ pub async fn delete_gacha_record(
 
 // ── 工具函数（模块级别，方便测试） ──
 fn normalize_date(s: &str) -> String {
-    // OCR 常把"4"误识别为"厶"
-    let s = s.replace('·', "-").replace('：', ":").replace('厶', "4")
-        .chars().filter(|c| !c.is_whitespace()).collect::<String>();
-    let colon_idx = s.chars().position(|c| c == ':');
-    if let Some(idx) = colon_idx {
+    // 先替换常见 OCR 错误字符
+    let s = s.replace('·', "-").replace('：', ":").replace('厶', "4");
+    // 去掉空格（OCR 有时会在数字间插空格）
+    let compact: String = s.chars().filter(|c| !c.is_whitespace()).collect();
+    eprintln!("[DATE] normalize: {:?} -> {:?}", s, compact);
+
+    // 如果已经是完整格式 YYYY-MM-DD HH:MM:SS，直接返回
+    if compact.len() == 19
+        && compact.chars().nth(4) == Some('-')
+        && compact.chars().nth(7) == Some('-')
+        && compact.chars().nth(13) == Some(':')
+    {
+        let result = format!("{} {}",
+            &compact[..10],  // YYYY-MM-DD
+            &compact[11..]   // HH:MM:SS
+        );
+        eprintln!("[DATE] already formatted: {:?}", result);
+        return result;
+    }
+
+    // 尝试找时间分隔符来拆分日期和时间
+    if let Some(idx) = compact.find(|c: char| c == ':') {
         if idx > 4 {
-            let date_part: String = s.chars().take(idx - 2).collect();
-            let time_part: String = s.chars().skip(idx - 2).collect();
-            return format!("{} {}", date_part.trim(), time_part.trim());
+            // idx 是字节索引，但对于 ASCII 数字来说等于字符索引
+            let date_part = &compact[..idx - 2];
+            let time_part = &compact[idx - 2..];
+            let result = format!("{} {}", date_part.trim(), time_part.trim());
+            eprintln!("[DATE] split at {} -> {:?}", idx, result);
+            return result;
         }
     }
-    s
+    // 兜底：原样返回
+    eprintln!("[DATE] no split needed, keeping: {:?}", compact);
+    compact
 }
 
 fn fuzzy_match_name(ocr: &str) -> String {
@@ -466,8 +488,11 @@ mod tests {
 
     #[test]
     fn test_normalize_date() {
-        let result = super::normalize_date("2026·05·2723：05：36");
-        assert_eq!(result, "2026-05-27 23:05:36");
+        assert_eq!(super::normalize_date("2026·05·2723：05：36"), "2026-05-27 23:05:36");
+        assert_eq!(super::normalize_date("2026-05-27 23:05:36"), "2026-05-27 23:05:36");
+        assert_eq!(super::normalize_date("2026-05-2723:05:36"), "2026-05-27 23:05:36");
+        // OCR 误识别
+        assert_eq!(super::normalize_date("2026·05·2厶23：05：36"), "2026-05-24 23:05:36");
     }
 
     #[test]
