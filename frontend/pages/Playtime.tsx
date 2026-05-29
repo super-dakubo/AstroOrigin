@@ -3,11 +3,15 @@ import { useGameStore } from '../stores/gameStore';
 export function Playtime() {
   const currentGame = useGameStore((s) => s.currentGame);
 
+  const isDark = currentGame === 'starrail';
+  const headingClass = isDark ? 'text-white' : 'text-gray-900';
+  const subClass = isDark ? 'text-slate-400' : 'text-gray-500';
+
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-bold text-gray-900">游戏时长</h1>
-        <p className="text-sm text-gray-500 mt-1">
+        <h1 className={`text-2xl font-bold ${headingClass}`}>游戏时长</h1>
+        <p className={`text-sm ${subClass} mt-1`}>
           {currentGame === 'genshin'
             ? '旅行者，看看你今天玩了多久'
             : '开拓者，看看你今天开拓了多久'}
