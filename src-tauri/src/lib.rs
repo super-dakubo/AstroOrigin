@@ -27,6 +27,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::gacha::get_gacha_records,
             commands::gacha::get_gacha_stats,
+            commands::gacha::import_gacha_screenshot,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
