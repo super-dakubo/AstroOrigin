@@ -184,87 +184,52 @@ pub async fn import_gacha_screenshot(
             .collect();
         eprintln!("[WARP] {} words after Y filter [{:.0},{:.0}]", words.len(), top, bot);
 
-        // ── 3. 从所有字的坐标直接算行列边界 ──
-        // 3a. 收集所有 X 中心点，聚类找出 4 列位置
-        let mut x_centers: Vec<f64> = words.iter().map(|w| w.x + w.width / 2.0).collect();
-        x_centers.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        // 聚类：相近的 X 合并（容差 50px）
-        let mut x_clusters: Vec<Vec<f64>> = Vec::new();
-        for xc in x_centers {
+        // ── 3. Y 聚类 → 分出行 ──
+        let mut y_vals: Vec<f64> = words.iter().map(|w| w.y + w.height / 2.0).collect();
+        y_vals.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let mut y_rows: Vec<Vec<f64>> = Vec::new();
+        for yv in y_vals {
             let mut placed = false;
-            for cl in x_clusters.iter_mut() {
-                if (xc - cl[0]).abs() < 50.0 { cl.push(xc); placed = true; break; }
+            for r in y_rows.iter_mut() {
+                if (yv - r[0]).abs() < 25.0 { r.push(yv); placed = true; break; }
             }
-            if !placed { x_clusters.push(vec![xc]); }
+            if !placed { y_rows.push(vec![yv]); }
         }
-        // 取每个类的均值，排序，取最大的 4 个类作为列位置
-        let mut col_centers: Vec<f64> = x_clusters.iter()
-            .map(|cl| cl.iter().sum::<f64>() / cl.len() as f64)
-            .collect();
-        col_centers.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        // 选最大的 4 个类（可能有零星杂音形成小类）
-        while col_centers.len() > 4 { col_centers.remove(0); }
-        // 计算列边界（两列中点）
-        let mut col_bounds: Vec<f64> = vec![0.0];
-        for i in 0..col_centers.len() - 1 {
-            col_bounds.push((col_centers[i] + col_centers[i + 1]) / 2.0);
-        }
-        col_bounds.push(f64::MAX);
-        eprintln!("[WARP] {} X clusters -> {} columns, bounds: {:?}", x_clusters.len(), col_centers.len(), col_bounds);
+        let mut row_centers: Vec<f64> = y_rows.iter().map(|r| r.iter().sum::<f64>() / r.len() as f64).collect();
+        row_centers.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        eprintln!("[WARP] {} rows", row_centers.len());
 
-        // 3b. Y 中心点聚类 → 行
-        let mut y_centers: Vec<f64> = words.iter().map(|w| w.y + w.height / 2.0).collect();
-        y_centers.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        let mut y_clusters: Vec<Vec<f64>> = Vec::new();
-        for yc in y_centers {
-            let mut placed = false;
-            for cl in y_clusters.iter_mut() {
-                if (yc - cl[0]).abs() < 25.0 { cl.push(yc); placed = true; break; }
-            }
-            if !placed { y_clusters.push(vec![yc]); }
-        }
-        eprintln!("[WARP] {} Y clusters (rows)", y_clusters.len());
-
-        // 3c. 按行组装
-        let mut rows_y: Vec<f64> = y_clusters.iter().map(|cl| cl.iter().sum::<f64>() / cl.len() as f64).collect();
-        rows_y.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-
-        // ── 4. 行 → 列 → 文字 ──
+        // ── 4. 对每行，用 X 间距切分列 ──
+        let half_span = if row_centers.len() > 1 { (row_centers[1] - row_centers[0]) / 2.0 } else { 30.0 };
         let skip_keywords = ["历史记录", "可在本页面", "当前为", "查看详情"];
-        let half_span = if rows_y.len() > 1 { (rows_y[1] - rows_y[0]) / 2.0 } else { 30.0 };
         let mut parsed: Vec<Vec<String>> = Vec::new();
-        for ry in rows_y {
-            let row_low = ry - half_span;
-            let row_high = ry + half_span;
 
-            // 取 Y 在此范围内的字
-            let mut row_words: Vec<&crate::ocr::OcrWord> = words.iter()
-                .filter(|w| {
-                    let cy = w.y + w.height / 2.0;
-                    cy >= row_low && cy < row_high
-                })
+        for ry in &row_centers {
+            // 取 Y 在此范围内的词
+            let mut rw: Vec<&crate::ocr::OcrWord> = words.iter()
+                .filter(|w| (w.y + w.height / 2.0 - ry).abs() < half_span)
                 .collect();
-            row_words.sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal));
-            let row_txt: String = row_words.iter().map(|w| w.text.trim()).collect::<Vec<_>>().join("");
-            // 跳过非数据行
-            if skip_keywords.iter().any(|k| row_txt.contains(k)) { continue; }
-            if row_txt.trim().is_empty() || row_txt.len() < 4 { continue; }
+            rw.sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal));
 
-            // 按 X 列边界分到 4 格
-            let mut cells: Vec<Vec<String>> = (0..4).map(|_| Vec::new()).collect();
-            for w in &row_words {
-                let cx = w.x + w.width / 2.0;
-                let mut ci = 0usize;
-                for bi in 0..col_bounds.len() - 1 {
-                    if cx >= col_bounds[bi] && cx < col_bounds[bi + 1] { ci = bi; break; }
+            let txt: String = rw.iter().map(|w| w.text.trim()).collect::<Vec<_>>().join("");
+            if skip_keywords.iter().any(|k| txt.contains(k)) || txt.trim().len() < 4 { continue; }
+
+            // 同一行内，词间 gap > 30px 视为列分隔
+            let mut cells: Vec<Vec<String>> = vec![vec![]];
+            let mut prev_right = rw[0].x + rw[0].width;
+            cells[0].push(rw[0].text.trim().to_string());
+            for w in rw.iter().skip(1) {
+                if w.x - prev_right > 30.0 {
+                    cells.push(vec![w.text.trim().to_string()]);
+                } else {
+                    cells.last_mut().unwrap().push(w.text.trim().to_string());
                 }
-                if ci < 4 { cells[ci].push(w.text.trim().to_string()); }
+                prev_right = w.x + w.width;
             }
             let merged: Vec<String> = cells.into_iter()
                 .map(|c| c.join("").chars().filter(|ch| !ch.is_whitespace()).collect())
                 .collect();
-            if merged.len() != 4 || merged.iter().any(|c| c.is_empty()) { continue; }
-            parsed.push(merged);
+            if merged.len() == 4 { parsed.push(merged); }
         }
         eprintln!("[WARP] {} parsed rows", parsed.len());
         for (i, r) in parsed.iter().enumerate() {
