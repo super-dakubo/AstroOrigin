@@ -1,7 +1,6 @@
 use serde::{Deserialize, Serialize};
 use crate::db::DbPool;
 use crate::error::TauriResult;
-use crate::game::GameKind;
 use anyhow::Context;
 
 /// 星穹铁道常见角色/光锥名（OCR 模糊匹配修正用）
@@ -157,10 +156,6 @@ pub async fn import_gacha_screenshot(
     image_path: String,
     game_kind: String,
 ) -> TauriResult<GachaImportResult> {
-    let kind = GameKind::from_str(&game_kind)
-        .ok_or_else(|| format!("Invalid game_kind: {}", game_kind))?;
-    let features = kind.features();
-
     let img_bytes = std::fs::read(&image_path)
         .map_err(|e| format!("Failed to read image: {}", e))?;
 
@@ -171,9 +166,9 @@ pub async fn import_gacha_screenshot(
         let conn = pool.get().map_err(|e| format!("DB error: {}", e))?;
 
         // 获取图片尺寸
-        let (orig_w, h) = match image::load_from_memory(&img_bytes) {
-            Ok(img) => (img.width() as f64, img.height() as f64),
-            Err(_) => (1920.0, 1080.0),
+        let h = match image::load_from_memory(&img_bytes) {
+            Ok(img) => img.height() as f64,
+            Err(_) => 1080.0,
         };
 
         // ── 1. OCR 全图 ──
@@ -189,80 +184,81 @@ pub async fn import_gacha_screenshot(
             .collect();
         eprintln!("[WARP] {} words after Y filter [{:.0},{:.0}]", words.len(), top, bot);
 
-        // ── 3. 行聚类，Y 中心 30px 容差 ──
-        let mut rows: Vec<Vec<crate::ocr::OcrWord>> = Vec::new();
-        'outer: for word in words {
-            let cy = word.y + word.height / 2.0;
-            for r in rows.iter_mut() {
-                let ry = r[0].y + r[0].height / 2.0;
-                if (cy - ry).abs() < 30.0 { r.push(word); continue 'outer; }
+        // ── 3. 从所有字的坐标直接算行列边界 ──
+        // 3a. 收集所有 X 中心点，聚类找出 4 列位置
+        let mut x_centers: Vec<f64> = words.iter().map(|w| w.x + w.width / 2.0).collect();
+        x_centers.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        // 聚类：相近的 X 合并（容差 50px）
+        let mut x_clusters: Vec<Vec<f64>> = Vec::new();
+        for xc in x_centers {
+            let mut placed = false;
+            for cl in x_clusters.iter_mut() {
+                if (xc - cl[0]).abs() < 50.0 { cl.push(xc); placed = true; break; }
             }
-            rows.push(vec![word]);
+            if !placed { x_clusters.push(vec![xc]); }
         }
-        // 每行按 X 排序
-        for r in rows.iter_mut() { r.sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal)); }
-        eprintln!("[WARP] {} rows after clustering", rows.len());
-        for (i, r) in rows.iter().enumerate() {
-            let t: String = r.iter().map(|w| w.text.trim()).collect::<Vec<_>>().join(" ");
-            eprintln!("  Row {}: {:?}", i, t);
+        // 取每个类的均值，排序，取最大的 4 个类作为列位置
+        let mut col_centers: Vec<f64> = x_clusters.iter()
+            .map(|cl| cl.iter().sum::<f64>() / cl.len() as f64)
+            .collect();
+        col_centers.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        // 选最大的 4 个类（可能有零星杂音形成小类）
+        while col_centers.len() > 4 { col_centers.remove(0); }
+        // 计算列边界（两列中点）
+        let mut col_bounds: Vec<f64> = vec![0.0];
+        for i in 0..col_centers.len() - 1 {
+            col_bounds.push((col_centers[i] + col_centers[i + 1]) / 2.0);
         }
+        col_bounds.push(f64::MAX);
+        eprintln!("[WARP] {} X clusters -> {} columns, bounds: {:?}", x_clusters.len(), col_centers.len(), col_bounds);
 
-        // ── 4. 找表头行 ──
-        let header_idx = rows.iter().position(|r| {
-            let txt: String = r.iter().map(|w| w.text.trim()).collect();
-            txt.contains("对象类型") && txt.contains("跃迁时间")
-        });
+        // 3b. Y 中心点聚类 → 行
+        let mut y_centers: Vec<f64> = words.iter().map(|w| w.y + w.height / 2.0).collect();
+        y_centers.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let mut y_clusters: Vec<Vec<f64>> = Vec::new();
+        for yc in y_centers {
+            let mut placed = false;
+            for cl in y_clusters.iter_mut() {
+                if (yc - cl[0]).abs() < 25.0 { cl.push(yc); placed = true; break; }
+            }
+            if !placed { y_clusters.push(vec![yc]); }
+        }
+        eprintln!("[WARP] {} Y clusters (rows)", y_clusters.len());
 
-        let col_bounds: Vec<f64> = if let Some(hi) = header_idx {
-            let row = &rows[hi];
-            // 拼合表头文本，记录每字的 X
-            // 拼合表头文本，记录每字的 X
-            // 注意：flat_map 将每个 word 的每个字拆开，所以 concat.len() = 全文字数
-            let concat: Vec<(f64, char)> = row.iter()
-                .flat_map(|w| w.text.chars().map(move |c| (w.x, c)))
-                .filter(|(_, c)| !c.is_whitespace())
-                .collect();
-            let full_text: String = concat.iter().map(|(_, c)| c).collect();
-            // 在拼合文本中找标签的位置
-            // full_text.find() 返回的是字节索引，concat 需要字符索引
-            // 用 char_indices 逐个字查找匹配
-            let labels = ["对象类型", "对象名称", "跃迁类型", "跃迁时间"];
-            let char_positions: Vec<usize> = full_text.char_indices().map(|(i, _)| i).collect();
-            let mut boundaries: Vec<f64> = labels.iter().filter_map(|label| {
-                full_text.find(label).and_then(|byte_pos| {
-                    // 将字节索引转为字符索引
-                    let char_idx = char_positions.iter().position(|&bp| bp == byte_pos)?;
-                    concat.get(char_idx).map(|(x, _)| *x)
-                })
-            }).collect();
-            boundaries.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-            boundaries.push(f64::MAX);
-            boundaries
-        } else {
-            // 回退：硬编码列宽（基于 1920×1080 比例缩放）
-            eprintln!("[WARP] Header not found, using fallback column widths");
-            let scale = orig_w / 1920.0;
-            vec![0.0, 140.0 * scale, 360.0 * scale, 540.0 * scale, f64::MAX]
-        };
-        eprintln!("[WARP] Column boundaries: {:?}", col_bounds);
+        // 3c. 按行组装
+        let mut rows_y: Vec<f64> = y_clusters.iter().map(|cl| cl.iter().sum::<f64>() / cl.len() as f64).collect();
+        rows_y.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
 
-        // ── 5. 遍历数据行，按 X 中心点分列 ──
-        let skip_keywords = ["历史记录", "可在本页面", "对象类型", "跃迁记录", "当前为"];
+        // ── 4. 行 → 列 → 文字 ──
+        let skip_keywords = ["历史记录", "可在本页面", "当前为", "查看详情"];
+        let half_span = if rows_y.len() > 1 { (rows_y[1] - rows_y[0]) / 2.0 } else { 30.0 };
         let mut parsed: Vec<Vec<String>> = Vec::new();
-        for (ri, row) in rows.iter().enumerate() {
-            if header_idx.is_some() && ri == header_idx.unwrap() { continue; }
-            let txt: String = row.iter().map(|w| w.text.trim()).collect();
-            if skip_keywords.iter().any(|k| txt.contains(k)) { continue; }
-            if txt.trim().is_empty() || txt.len() <= 2 { continue; }
+        for ry in rows_y {
+            let row_low = ry - half_span;
+            let row_high = ry + half_span;
 
+            // 取 Y 在此范围内的字
+            let mut row_words: Vec<&crate::ocr::OcrWord> = words.iter()
+                .filter(|w| {
+                    let cy = w.y + w.height / 2.0;
+                    cy >= row_low && cy < row_high
+                })
+                .collect();
+            row_words.sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal));
+            let row_txt: String = row_words.iter().map(|w| w.text.trim()).collect::<Vec<_>>().join("");
+            // 跳过非数据行
+            if skip_keywords.iter().any(|k| row_txt.contains(k)) { continue; }
+            if row_txt.trim().is_empty() || row_txt.len() < 4 { continue; }
+
+            // 按 X 列边界分到 4 格
             let mut cells: Vec<Vec<String>> = (0..4).map(|_| Vec::new()).collect();
-            for word in row {
-                let cx = word.x + word.width / 2.0;
+            for w in &row_words {
+                let cx = w.x + w.width / 2.0;
                 let mut ci = 0usize;
                 for bi in 0..col_bounds.len() - 1 {
                     if cx >= col_bounds[bi] && cx < col_bounds[bi + 1] { ci = bi; break; }
                 }
-                if ci < 4 { cells[ci].push(word.text.trim().to_string()); }
+                if ci < 4 { cells[ci].push(w.text.trim().to_string()); }
             }
             let merged: Vec<String> = cells.into_iter()
                 .map(|c| c.join("").chars().filter(|ch| !ch.is_whitespace()).collect())
