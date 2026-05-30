@@ -2,6 +2,29 @@ use serde::{Deserialize, Serialize};
 use crate::db::DbPool;
 use crate::error::TauriResult;
 use anyhow::Context;
+use std::sync::OnceLock;
+
+/// 全局 AppHandle，用于在 spawn_blocking 内发进度事件
+static APP_HANDLE: OnceLock<tauri::AppHandle> = OnceLock::new();
+
+pub fn init_app_handle(handle: tauri::AppHandle) {
+    let _ = APP_HANDLE.set(handle);
+}
+
+fn emit_phase(file_idx: usize, file_total: usize, phase: &str, file: Option<&str>) {
+    use tauri::Emitter;
+    if let Some(handle) = APP_HANDLE.get() {
+        let mut payload = serde_json::json!({
+            "current": file_idx + 1,
+            "total": file_total,
+            "phase": phase,
+        });
+        if let Some(f) = file {
+            payload["file"] = serde_json::Value::String(f.to_string());
+        }
+        let _ = handle.emit("import-progress", payload);
+    }
+}
 
 /// 星穹铁道常见角色/光锥名（OCR 模糊匹配修正用）
 const STARRAIL_NAMES: &[&str] = &[
@@ -168,7 +191,7 @@ pub async fn import_gacha_screenshot(
 
     tokio::task::spawn_blocking(move || {
         let conn = pool.get().map_err(|e| format!("DB error: {}", e))?;
-        process_one_screenshot(&conn, &img_bytes, &game_kind)
+        process_one_screenshot(&conn, &img_bytes, &game_kind, 0, 0)
     })
     .await
     .map_err(|e| format!("Task join error: {}", e))?
@@ -178,8 +201,11 @@ fn process_one_screenshot(
     conn: &rusqlite::Connection,
     img_bytes: &[u8],
     game_kind: &str,
+    file_idx: usize,
+    file_total: usize,
 ) -> Result<GachaImportResult, String> {
-    // ── 1. OCR 全图 ──
+    // ── 阶段 1: 文本检测 ──
+    emit_phase(file_idx, file_total, "detect", None);
     let all_words = crate::ocr::ocr_image(img_bytes)
         .map_err(|e| format!("OCR failed: {}", e))?;
     eprintln!("[WARP] {} raw words", all_words.len());
@@ -187,6 +213,9 @@ fn process_one_screenshot(
         eprintln!("[WARP]   word[{}]: {:?} @ ({:.0},{:.0}) {}x{}",
             i, w.text, w.x, w.y, w.width, w.height);
     }
+
+    // ── 阶段 2: 文字识别完成 ──
+    emit_phase(file_idx, file_total, "recognize", None);
 
     // ── 2. Y 聚类 → 行 ──
     let mut y_vals: Vec<f64> = all_words.iter().map(|w| w.y + w.height / 2.0).collect();
@@ -204,6 +233,9 @@ fn process_one_screenshot(
         .collect();
     row_centers.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     eprintln!("[WARP] {} rows", row_centers.len());
+
+    // ── 阶段 3: 表格解析（表头检测 → 列对齐）──
+    emit_phase(file_idx, file_total, "parse", None);
 
     // ── 3. 找表头行，提取 4 列名的 X 范围 ──
     let half_span = if row_centers.len() > 1 { (row_centers[1] - row_centers[0]) / 2.0 } else { 30.0 };
@@ -301,6 +333,9 @@ fn process_one_screenshot(
     }
     eprintln!("[WARP] {} data rows", data_rows.len());
 
+    // ── 阶段 4: 入库 ──
+    emit_phase(file_idx, file_total, "save", None);
+
     // ── 5. 去重入库 ──
     let mut imported = 0usize;
     let mut duplicates = 0usize;
@@ -353,14 +388,6 @@ pub async fn import_gacha_screenshots(
         let mut total_duplicates = 0usize;
 
         for (idx, path) in image_paths.iter().enumerate() {
-            // 当前文件开始处理
-            let _ = app_handle.emit("import-progress", serde_json::json!({
-                "current": idx,
-                "total": total,
-                "file": path,
-                "status": "processing",
-            }));
-
             eprintln!("[BATCH] [{}/{}] Processing: {}", idx + 1, total, path);
 
             let img_bytes = match std::fs::read(path) {
@@ -368,16 +395,11 @@ pub async fn import_gacha_screenshots(
                 Err(e) => {
                     eprintln!("[BATCH]   Skip: read error {}", e);
                     total_duplicates += 1;
-                    let _ = app_handle.emit("import-progress", serde_json::json!({
-                        "current": idx + 1,
-                        "total": total,
-                        "status": "done",
-                    }));
                     continue;
                 }
             };
 
-            match process_one_screenshot(&conn, &img_bytes, &game_kind) {
+            match process_one_screenshot(&conn, &img_bytes, &game_kind, idx, total) {
                 Ok(r) => {
                     total_imported += r.imported;
                     total_duplicates += r.duplicates;
@@ -388,13 +410,6 @@ pub async fn import_gacha_screenshots(
                     total_duplicates += 1;
                 }
             }
-
-            // 当前文件处理完成
-            let _ = app_handle.emit("import-progress", serde_json::json!({
-                "current": idx + 1,
-                "total": total,
-                "status": "done",
-            }));
         }
 
         // 完成事件

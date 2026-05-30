@@ -4,7 +4,7 @@ import { StatCard } from '../components/StatCard';
 import { LuckChart } from '../components/LuckChart';
 import { RecordTable } from '../components/RecordTable';
 import { open } from '@tauri-apps/plugin-dialog';
-import { listen } from '@tauri-apps/api/event';
+import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { useState, useEffect, useRef } from 'react';
 
 interface GachaStats {
@@ -28,9 +28,17 @@ interface ImportProgress {
   current: number;
   total: number;
   file?: string;
+  phase?: string;
   status?: string;
   done?: boolean;
 }
+
+const PHASE_LABELS: Record<string, string> = {
+  detect: '🔍 文本检测',
+  recognize: '📝 文字识别',
+  parse: '📊 表格解析',
+  save: '💾 入库中',
+};
 
 export function Gacha() {
   const currentGame = useGameStore((s) => s.currentGame);
@@ -52,7 +60,7 @@ export function Gacha() {
   const [progress, setProgress] = useState<ImportProgress | null>(null);
   const [progressExpanded, setProgressExpanded] = useState(false);
   const [currentFile, setCurrentFile] = useState<string>('');
-  const unlistenRef = useRef<(() => void) | null>(null);
+  const unlistenRef = useRef<UnlistenFn | null>(null);
 
   // 监听导入进度事件
   useEffect(() => {
@@ -60,9 +68,7 @@ export function Gacha() {
       if (unlistenRef.current) unlistenRef.current();
       unlistenRef.current = await listen<ImportProgress>('import-progress', (event) => {
         const p = event.payload;
-        if (p.status === 'processing') {
-          setCurrentFile(p.file || '');
-        }
+        if (p.file) setCurrentFile(p.file);
         setProgress(p);
         if (p.done) {
           setTimeout(() => { setProgressExpanded(false); setCurrentFile(''); }, 2000);
@@ -222,6 +228,9 @@ export function Gacha() {
               <div className="flex items-center justify-between mb-2">
                 <span className="text-sm text-blue-700">
                   {currentFile ? currentFile.split(/[/\\]/).pop() : ''} ({progress.current}/{progress.total})
+                </span>
+                <span className="text-xs text-blue-500">
+                  {progress.phase ? (PHASE_LABELS[progress.phase] || progress.phase) : ''}
                 </span>
               </div>
               <div className="w-full bg-blue-200 rounded-full h-2">

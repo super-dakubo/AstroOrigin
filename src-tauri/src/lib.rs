@@ -24,6 +24,7 @@ pub fn run() {
                 .expect("Failed to initialize database");
 
             app.manage(pool);
+            commands::gacha::init_app_handle(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
