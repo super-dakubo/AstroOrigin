@@ -30,6 +30,7 @@ pub fn run() {
             commands::gacha::get_gacha_records,
             commands::gacha::get_gacha_stats,
             commands::gacha::import_gacha_screenshot,
+            commands::gacha::import_gacha_screenshots,
             commands::gacha::delete_gacha_record,
             commands::gacha::update_gacha_record,
         ])

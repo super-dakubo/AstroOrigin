@@ -165,186 +165,239 @@ pub async fn import_gacha_screenshot(
         .map_err(|e| format!("Failed to read image: {}", e))?;
 
     let pool = pool.inner().clone();
-    let game_kind_clone = game_kind.clone();
 
     tokio::task::spawn_blocking(move || {
         let conn = pool.get().map_err(|e| format!("DB error: {}", e))?;
+        process_one_screenshot(&conn, &img_bytes, &game_kind)
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
+    .map_err(|e| format!("{:#}", e))
+}
+fn process_one_screenshot(
+    conn: &rusqlite::Connection,
+    img_bytes: &[u8],
+    game_kind: &str,
+) -> Result<GachaImportResult, String> {
+    // ── 1. OCR 全图 ──
+    let all_words = crate::ocr::ocr_image(img_bytes)
+        .map_err(|e| format!("OCR failed: {}", e))?;
+    eprintln!("[WARP] {} raw words", all_words.len());
+    for (i, w) in all_words.iter().enumerate().take(30) {
+        eprintln!("[WARP]   word[{}]: {:?} @ ({:.0},{:.0}) {}x{}",
+            i, w.text, w.x, w.y, w.width, w.height);
+    }
 
-        // 获取图片尺寸
-        // ── 1. OCR 全图 ──
-        let all_words = crate::ocr::ocr_image(&img_bytes)
-            .map_err(|e| format!("OCR failed: {}", e))?;
-        eprintln!("[WARP] {} raw words", all_words.len());
-        for (i, w) in all_words.iter().enumerate().take(30) {
-            eprintln!("[WARP]   word[{}]: {:?} @ ({:.0},{:.0}) {}x{}",
-                i, w.text, w.x, w.y, w.width, w.height);
+    // ── 2. Y 聚类 → 行 ──
+    let mut y_vals: Vec<f64> = all_words.iter().map(|w| w.y + w.height / 2.0).collect();
+    y_vals.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let mut y_clusters: Vec<Vec<f64>> = Vec::new();
+    for yv in y_vals {
+        let mut placed = false;
+        for cl in y_clusters.iter_mut() {
+            if (yv - cl[0]).abs() < 25.0 { cl.push(yv); placed = true; break; }
         }
+        if !placed { y_clusters.push(vec![yv]); }
+    }
+    let mut row_centers: Vec<f64> = y_clusters.iter()
+        .map(|cl| cl.iter().sum::<f64>() / cl.len() as f64)
+        .collect();
+    row_centers.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    eprintln!("[WARP] {} rows", row_centers.len());
 
-        // ── 2. Y 聚类 → 行 ──
-        let mut y_vals: Vec<f64> = all_words.iter().map(|w| w.y + w.height / 2.0).collect();
-        y_vals.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        let mut y_clusters: Vec<Vec<f64>> = Vec::new();
-        for yv in y_vals {
-            let mut placed = false;
-            for cl in y_clusters.iter_mut() {
-                if (yv - cl[0]).abs() < 25.0 { cl.push(yv); placed = true; break; }
-            }
-            if !placed { y_clusters.push(vec![yv]); }
-        }
-        let mut row_centers: Vec<f64> = y_clusters.iter()
-            .map(|cl| cl.iter().sum::<f64>() / cl.len() as f64)
+    // ── 3. 找表头行，提取 4 列名的 X 范围 ──
+    let half_span = if row_centers.len() > 1 { (row_centers[1] - row_centers[0]) / 2.0 } else { 30.0 };
+    let mut hdr_cols: Vec<(f64, f64)> = Vec::new();
+
+    for ry in &row_centers {
+        let mut rw: Vec<&crate::ocr::OcrWord> = all_words.iter()
+            .filter(|w| (w.y + w.height / 2.0 - ry).abs() < half_span)
             .collect();
-        row_centers.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        eprintln!("[WARP] {} rows", row_centers.len());
+        rw.sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal));
+        let concat: String = rw.iter().map(|w| w.text.trim()).collect::<Vec<_>>().join("");
+        if !concat.contains("对象类型") || !concat.contains("跃迁时间") { continue; }
 
-        // ── 3. 找表头行，提取 4 列名的 X 范围 ──
-        let half_span = if row_centers.len() > 1 { (row_centers[1] - row_centers[0]) / 2.0 } else { 30.0 };
-        let mut hdr_cols: Vec<(f64, f64)> = Vec::new(); // 每列 [(x_start, x_end), ...]
+        let gaps: Vec<(usize, f64)> = rw.windows(2).enumerate()
+            .map(|(i, pair)| (i, pair[1].x - (pair[0].x + pair[0].width)))
+            .filter(|(_, g)| *g > 0.0)
+            .collect();
+        let gap_count = gaps.len().min(3);
+        let mut sorted = gaps.clone();
+        sorted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        let mut split_idx: Vec<usize> = sorted.iter().take(gap_count).map(|(i, _)| *i).collect();
+        split_idx.sort();
 
-        for ry in &row_centers {
-            let mut rw: Vec<&crate::ocr::OcrWord> = all_words.iter()
-                .filter(|w| (w.y + w.height / 2.0 - ry).abs() < half_span)
-                .collect();
-            rw.sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal));
-            let concat: String = rw.iter().map(|w| w.text.trim()).collect::<Vec<_>>().join("");
-            if !concat.contains("对象类型") || !concat.contains("跃迁时间") { continue; }
-
-            // 表头行：每个列名是一个独立词（PP-OCRv4）或多个字（WinRT OCR）
-            // 词间 gap 较大的位置就是列边界
-            let gaps: Vec<(usize, f64)> = rw.windows(2).enumerate()
-                .map(|(i, pair)| (i, pair[1].x - (pair[0].x + pair[0].width)))
-                .filter(|(_, g)| *g > 0.0)
-                .collect();
-            // 最多取 3 个最大 gap 分隔 4 个列名；不足 3 个 gap（例如每列正好 1 个词时只有 3 个 gap）
-            // 也继续处理，每个 gap 切分一个词
-            let gap_count = gaps.len().min(3);
-            let mut sorted = gaps.clone();
-            sorted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-            let mut split_idx: Vec<usize> = sorted.iter().take(gap_count).map(|(i, _)| *i).collect();
-            split_idx.sort();
-
-            if split_idx.len() < 3 && rw.len() > 4 {
-                // Windows OCR 时代：16+ 个字却只有不到 3 个大 gap，说明此行不是表头
-                eprintln!("[WARP]   header row has {} words but only {} gaps, skipping", rw.len(), split_idx.len());
-                break;
-            }
-
-            let mut start = 0usize;
-            for si in &split_idx {
-                let end = *si;
-                let xs: Vec<f64> = rw[start..=end].iter().map(|w| w.x).collect();
-                let x_min = xs.iter().cloned().fold(f64::MAX, f64::min);
-                let x_max = rw[start..=end].iter()
-                    .map(|w| w.x + w.width).fold(f64::MIN, f64::max);
-                hdr_cols.push((x_min, x_max));
-                start = *si + 1;
-            }
-            // 最后一段
-            if start < rw.len() {
-                let xs: Vec<f64> = rw[start..].iter().map(|w| w.x).collect();
-                let x_min = xs.iter().cloned().fold(f64::MAX, f64::min);
-                let x_max = rw[start..].iter().map(|w| w.x + w.width).fold(f64::MIN, f64::max);
-                hdr_cols.push((x_min, x_max));
-            }
-            eprintln!("[WARP] Header columns: {:?}", hdr_cols);
+        if split_idx.len() < 3 && rw.len() > 4 {
+            eprintln!("[WARP]   header row has {} words but only {} gaps, skipping", rw.len(), split_idx.len());
             break;
         }
 
-        if hdr_cols.len() != 4 {
-            return Err("无法定位表头4列，截图可能不完整".to_string());
+        let mut start = 0usize;
+        for si in &split_idx {
+            let end = *si;
+            let xs: Vec<f64> = rw[start..=end].iter().map(|w| w.x).collect();
+            let x_min = xs.iter().cloned().fold(f64::MAX, f64::min);
+            let x_max = rw[start..=end].iter()
+                .map(|w| w.x + w.width).fold(f64::MIN, f64::max);
+            hdr_cols.push((x_min, x_max));
+            start = *si + 1;
         }
-
-        // ── 4. 对表头下所有行，用表头列区间判断每个字属于哪列 ──
-        let mut data_rows: Vec<[String; 4]> = Vec::new();
-        let mut found_header = false;
-
-        for ry in &row_centers {
-            let mut rw: Vec<&crate::ocr::OcrWord> = all_words.iter()
-                .filter(|w| (w.y + w.height / 2.0 - ry).abs() < half_span)
-                .collect();
-            rw.sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal));
-            let concat: String = rw.iter().map(|w| w.text.trim()).collect::<Vec<_>>().join("");
-
-            // 找到表头行
-            if concat.contains("对象类型") { found_header = true; continue; }
-            if !found_header { continue; }
-            // 跳过页码（只有 1 个短字的行）
-            if rw.len() <= 2 { continue; }
-
-            let mut cells: [Vec<String>; 4] = Default::default();
-            for w in &rw {
-                let cx = w.x + w.width / 2.0;
-                // 用列区间匹配替代单点比较，5px 容差应对 OCR 坐标漂移
-                let mut ci: Option<usize> = None;
-                for (hi, &(col_start, col_end)) in hdr_cols.iter().enumerate() {
-                    if cx >= col_start - 5.0 && cx < col_end + 5.0 {
-                        ci = Some(hi);
-                        break;
-                    }
-                }
-                // fallback：未落入任何区间时分配到最近列起始点
-                let ci = ci.unwrap_or_else(|| {
-                    hdr_cols.iter()
-                        .enumerate()
-                        .min_by(|(_, &(s1, _)), (_, &(s2, _))| {
-                            (cx - s1).abs().partial_cmp(&(cx - s2).abs()).unwrap_or(std::cmp::Ordering::Equal)
-                        })
-                        .map(|(i, _)| i)
-                        .unwrap_or(3)
-                });
-                cells[ci].push(w.text.trim().to_string());
-            }
-            let merged: [String; 4] = [
-                cells[0].join(""), cells[1].join(""),
-                cells[2].join(""), cells[3].join(""),
-            ];
-            data_rows.push(merged);
-            if data_rows.len() >= 5 { break; } // 只要 5 行数据
+        if start < rw.len() {
+            let xs: Vec<f64> = rw[start..].iter().map(|w| w.x).collect();
+            let x_min = xs.iter().cloned().fold(f64::MAX, f64::min);
+            let x_max = rw[start..].iter().map(|w| w.x + w.width).fold(f64::MIN, f64::max);
+            hdr_cols.push((x_min, x_max));
         }
-        eprintln!("[WARP] {} data rows", data_rows.len());
+        eprintln!("[WARP] Header columns: {:?}", hdr_cols);
+        break;
+    }
 
-        // ── 5. 去重入库 ──
-        let mut imported = 0usize;
-        let mut duplicates = 0usize;
-        let kind_str = &game_kind_clone;
+    if hdr_cols.len() != 4 {
+        return Err("无法定位表头4列，截图可能不完整".to_string());
+    }
 
-        for cells in &data_rows {
-            // cells 已经是 [String; 4]，直接 trim 引用
-            let c: [&str; 4] = [
-                cells[0].trim(), cells[1].trim(),
-                cells[2].trim(), cells[3].trim(),
-            ];
+    // ── 4. 对表头下所有行，用表头列区间判断每个字属于哪列 ──
+    let mut data_rows: Vec<[String; 4]> = Vec::new();
+    let mut found_header = false;
 
-            let obj_type = c[0];
-            let item_name = fuzzy_match_name(c[1]);
-            let record_date = normalize_date(c[3]);
+    for ry in &row_centers {
+        let mut rw: Vec<&crate::ocr::OcrWord> = all_words.iter()
+            .filter(|w| (w.y + w.height / 2.0 - ry).abs() < half_span)
+            .collect();
+        rw.sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal));
+        let concat: String = rw.iter().map(|w| w.text.trim()).collect::<Vec<_>>().join("");
 
-            // 星数：提示性赋值，用户可手动改
-            let star_rating = if obj_type == "角色" { 4 } else { 3 };
+        if concat.contains("对象类型") { found_header = true; continue; }
+        if !found_header { continue; }
+        if rw.len() <= 2 { continue; }
 
-            // 去重：相同 game_kind + item_name + record_date 视为同一条
-            if !item_name.is_empty() && !record_date.is_empty() {
-                let changed = conn.execute(
-                    "INSERT OR IGNORE INTO gacha_records (game_kind, item_name, star_rating, record_date, is_won)
-                     VALUES (?, ?, ?, ?, ?)",
-                    rusqlite::params![kind_str, &item_name, star_rating, &record_date, star_rating < 5],
-                ).map_err(|e| format!("Insert error: {}", e))?;
-                if changed > 0 {
-                    imported += 1;
-                    eprintln!("[IMPORT]   Imported: '{}' ({}★, {} | {})", item_name, star_rating, obj_type, record_date);
-                } else {
-                    duplicates += 1;
-                    eprintln!("[IMPORT]   Duplicate skipped: '{}' | {}", item_name, record_date);
+        let mut cells: [Vec<String>; 4] = Default::default();
+        for w in &rw {
+            let cx = w.x + w.width / 2.0;
+            let mut ci: Option<usize> = None;
+            for (hi, &(col_start, col_end)) in hdr_cols.iter().enumerate() {
+                if cx >= col_start - 5.0 && cx < col_end + 5.0 {
+                    ci = Some(hi);
+                    break;
                 }
             }
+            let ci = ci.unwrap_or_else(|| {
+                hdr_cols.iter()
+                    .enumerate()
+                    .min_by(|(_, &(s1, _)), (_, &(s2, _))| {
+                        (cx - s1).abs().partial_cmp(&(cx - s2).abs()).unwrap_or(std::cmp::Ordering::Equal)
+                    })
+                    .map(|(i, _)| i)
+                    .unwrap_or(3)
+            });
+            cells[ci].push(w.text.trim().to_string());
+        }
+        let merged: [String; 4] = [
+            cells[0].join(""), cells[1].join(""),
+            cells[2].join(""), cells[3].join(""),
+        ];
+        data_rows.push(merged);
+        if data_rows.len() >= 5 { break; }
+    }
+    eprintln!("[WARP] {} data rows", data_rows.len());
+
+    // ── 5. 去重入库 ──
+    let mut imported = 0usize;
+    let mut duplicates = 0usize;
+
+    for cells in &data_rows {
+        let c: [&str; 4] = [
+            cells[0].trim(), cells[1].trim(),
+            cells[2].trim(), cells[3].trim(),
+        ];
+
+        let obj_type = c[0];
+        let item_name = fuzzy_match_name(c[1]);
+        let record_date = normalize_date(c[3]);
+
+        let star_rating = if obj_type == "角色" { 4 } else { 3 };
+
+        if !item_name.is_empty() && !record_date.is_empty() {
+            let changed = conn.execute(
+                "INSERT OR IGNORE INTO gacha_records (game_kind, item_name, star_rating, record_date, is_won)
+                 VALUES (?, ?, ?, ?, ?)",
+                rusqlite::params![game_kind, &item_name, star_rating, &record_date, star_rating < 5],
+            ).map_err(|e| format!("Insert error: {}", e))?;
+            if changed > 0 {
+                imported += 1;
+                eprintln!("[IMPORT]   Imported: '{}' ({}★, {} | {})", item_name, star_rating, obj_type, record_date);
+            } else {
+                duplicates += 1;
+                eprintln!("[IMPORT]   Duplicate skipped: '{}' | {}", item_name, record_date);
+            }
+        }
+    }
+
+    Ok(GachaImportResult { imported, duplicates })
+}
+
+#[tauri::command]
+pub async fn import_gacha_screenshots(
+    pool: tauri::State<'_, DbPool>,
+    app_handle: tauri::AppHandle,
+    image_paths: Vec<String>,
+    game_kind: String,
+) -> TauriResult<GachaImportResult> {
+    use tauri::Emitter;
+    let pool = pool.inner().clone();
+    let total = image_paths.len();
+
+    tokio::task::spawn_blocking(move || {
+        let conn = pool.get().map_err(|e| format!("DB error: {}", e))?;
+        let mut total_imported = 0usize;
+        let mut total_duplicates = 0usize;
+
+        for (idx, path) in image_paths.iter().enumerate() {
+            // 发进度事件
+            let _ = app_handle.emit("import-progress", serde_json::json!({
+                "current": idx + 1,
+                "total": total,
+                "file": path,
+            }));
+
+            eprintln!("[BATCH] [{}/{}] Processing: {}", idx + 1, total, path);
+
+            let img_bytes = match std::fs::read(path) {
+                Ok(b) => b,
+                Err(e) => {
+                    eprintln!("[BATCH]   Skip: read error {}", e);
+                    total_duplicates += 1; // 算作已过
+                    continue;
+                }
+            };
+
+            match process_one_screenshot(&conn, &img_bytes, &game_kind) {
+                Ok(r) => {
+                    total_imported += r.imported;
+                    total_duplicates += r.duplicates;
+                    eprintln!("[BATCH]   +{} imported, {} dupes", r.imported, r.duplicates);
+                }
+                Err(e) => {
+                    eprintln!("[BATCH]   Skip: {}", e);
+                    total_duplicates += 1;
+                }
+            }
         }
 
-        Ok(GachaImportResult { imported, duplicates })
+        // 完成事件
+        let _ = app_handle.emit("import-progress", serde_json::json!({
+            "current": total,
+            "total": total,
+            "done": true,
+        }));
+
+        Ok(GachaImportResult { imported: total_imported, duplicates: total_duplicates })
     })
     .await
     .map_err(|e| format!("Task join error: {}", e))
     .and_then(|inner| inner)
 }
+
 
 #[tauri::command]
 pub async fn update_gacha_record(

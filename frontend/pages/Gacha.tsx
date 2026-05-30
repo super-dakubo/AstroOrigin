@@ -4,7 +4,8 @@ import { StatCard } from '../components/StatCard';
 import { LuckChart } from '../components/LuckChart';
 import { RecordTable } from '../components/RecordTable';
 import { open } from '@tauri-apps/plugin-dialog';
-import { useState } from 'react';
+import { listen } from '@tauri-apps/api/event';
+import { useState, useEffect, useRef } from 'react';
 
 interface GachaStats {
   totalPulls: number;
@@ -23,6 +24,13 @@ interface GachaRecord {
   isWon: boolean;
 }
 
+interface ImportProgress {
+  current: number;
+  total: number;
+  file?: string;
+  done?: boolean;
+}
+
 export function Gacha() {
   const currentGame = useGameStore((s) => s.currentGame);
   const theme = useGameStore((s) => s.theme);
@@ -36,11 +44,26 @@ export function Gacha() {
   });
 
   const importMutation = useTauriMutation<{ imported: number; duplicates: number }, { imagePath: string; gameKind: string }>('import_gacha_screenshot');
+  const batchImportMutation = useTauriMutation<{ imported: number; duplicates: number }, { imagePaths: string[]; gameKind: string }>('import_gacha_screenshots');
   const deleteMutation = useTauriMutation<boolean, { id: number }>('delete_gacha_record');
   const updateMutation = useTauriMutation<boolean, { id: number; itemName: string; starRating: number; recordDate: string; isWon: boolean }>('update_gacha_record');
   const [error, setError] = useState<string | null>(null);
+  const [progress, setProgress] = useState<ImportProgress | null>(null);
+  const unlistenRef = useRef<(() => void) | null>(null);
 
-  const handleImport = async () => {
+  // 监听导入进度事件
+  useEffect(() => {
+    const setup = async () => {
+      if (unlistenRef.current) unlistenRef.current();
+      unlistenRef.current = await listen<ImportProgress>('import-progress', (event) => {
+        setProgress(event.payload);
+      });
+    };
+    setup();
+    return () => { if (unlistenRef.current) unlistenRef.current(); };
+  }, []);
+
+  const handleSingleImport = async () => {
     const selected = await open({
       multiple: false,
       filters: [{ name: '截图', extensions: ['png', 'jpg', 'jpeg', 'bmp'] }],
@@ -63,6 +86,33 @@ export function Gacha() {
     }
   };
 
+  const handleBatchImport = async () => {
+    const selected = await open({
+      multiple: true,
+      filters: [{ name: '截图', extensions: ['png', 'jpg', 'jpeg', 'bmp'] }],
+    });
+    if (!selected || selected.length === 0) return;
+
+    setProgress({ current: 0, total: selected.length });
+
+    try {
+      const result = await batchImportMutation.mutateAsync({
+        imagePaths: selected,
+        gameKind: currentGame,
+      });
+      refetchStats();
+      refetchRecords();
+      setError(null);
+      setProgress(null);
+      alert(`批量导入完成！新增 ${result.imported} 条，跳过 ${result.duplicates} 条`);
+    } catch (e) {
+      const msg = `批量导入失败：${e}`;
+      setError(msg);
+      console.error(msg);
+      setProgress(null);
+    }
+  };
+
   const chartData = (records ?? [])
     .filter((r) => r.starRating === 5)
     .map((r, i, arr) => ({
@@ -78,6 +128,8 @@ export function Gacha() {
     ? Math.round((stats.lostCount / stats.fiveStarCount) * 100)
     : 0;
 
+  const isImporting = importMutation.isPending || batchImportMutation.isPending;
+
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
@@ -87,14 +139,24 @@ export function Gacha() {
             {currentGame === 'genshin' ? '派蒙帮你记着每一抽' : '帕姆帮你记着每一跃'}
           </p>
         </div>
-        <button
-          onClick={handleImport}
-          disabled={importMutation.isPending}
-          className="px-4 py-2 text-sm text-white font-medium rounded-lg transition-colors disabled:opacity-50"
-          style={{ background: theme.primary }}
-        >
-          {importMutation.isPending ? '导入中...' : '+ 导入截图'}
-        </button>
+        <div className="flex gap-2">
+          <button
+            onClick={handleSingleImport}
+            disabled={isImporting}
+            className="px-4 py-2 text-sm text-white font-medium rounded-lg transition-colors disabled:opacity-50"
+            style={{ background: theme.primary }}
+          >
+            {isImporting ? '导入中...' : '+ 导入截图'}
+          </button>
+          <button
+            onClick={handleBatchImport}
+            disabled={isImporting}
+            className="px-4 py-2 text-sm text-white font-medium rounded-lg transition-colors disabled:opacity-50 border-2"
+            style={{ background: theme.primary, borderColor: theme.primary }}
+          >
+            {isImporting ? '导入中...' : '+ 批量导入'}
+          </button>
+        </div>
       </div>
 
       <div className="grid grid-cols-4 gap-4">
@@ -118,6 +180,27 @@ export function Gacha() {
           subColor="#D4433B"
         />
       </div>
+
+      {/* 进度条 */}
+      {progress && (
+        <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-sm text-blue-700">
+              正在处理 {progress.current}/{progress.total}
+              {progress.file && <> — {progress.file.split(/[/\\]/).pop()}</>}
+            </span>
+            <span className="text-xs text-blue-500">
+              {Math.round((progress.current / progress.total) * 100)}%
+            </span>
+          </div>
+          <div className="w-full bg-blue-200 rounded-full h-2">
+            <div
+              className="bg-blue-500 h-2 rounded-full transition-all duration-200"
+              style={{ width: `${(progress.current / progress.total) * 100}%` }}
+            />
+          </div>
+        </div>
+      )}
 
       <LuckChart records={chartData} />
       <RecordTable

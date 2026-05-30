@@ -24,6 +24,8 @@ impl PaddleOcrEngine {
             .det_model_path(det_model_path)
             .rec_model_path(rec_model_path)
             .dictionary_path(dict_path)
+            .det_limit_side_len(640)   // 缩短检测边长，面积减半 ≈ 检测时间减半
+            .rec_batch_size(8)         // 批量识别文本区域
             .build()?;
         OCR_ENGINE
             .set(SafeOcrEngine(Mutex::new(engine)))
