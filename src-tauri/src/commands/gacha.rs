@@ -175,6 +175,10 @@ pub async fn import_gacha_screenshot(
         let all_words = crate::ocr::ocr_image(&img_bytes)
             .map_err(|e| format!("OCR failed: {}", e))?;
         eprintln!("[WARP] {} raw words", all_words.len());
+        for (i, w) in all_words.iter().enumerate().take(30) {
+            eprintln!("[WARP]   word[{}]: {:?} @ ({:.0},{:.0}) {}x{}",
+                i, w.text, w.x, w.y, w.width, w.height);
+        }
 
         // ── 2. Y 聚类 → 行 ──
         let mut y_vals: Vec<f64> = all_words.iter().map(|w| w.y + w.height / 2.0).collect();

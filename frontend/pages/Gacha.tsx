@@ -4,6 +4,7 @@ import { StatCard } from '../components/StatCard';
 import { LuckChart } from '../components/LuckChart';
 import { RecordTable } from '../components/RecordTable';
 import { open } from '@tauri-apps/plugin-dialog';
+import { useState } from 'react';
 
 interface GachaStats {
   totalPulls: number;
@@ -37,6 +38,7 @@ export function Gacha() {
   const importMutation = useTauriMutation<{ imported: number; duplicates: number }, { imagePath: string; gameKind: string }>('import_gacha_screenshot');
   const deleteMutation = useTauriMutation<boolean, { id: number }>('delete_gacha_record');
   const updateMutation = useTauriMutation<boolean, { id: number; itemName: string; starRating: number; recordDate: string; isWon: boolean }>('update_gacha_record');
+  const [error, setError] = useState<string | null>(null);
 
   const handleImport = async () => {
     const selected = await open({
@@ -52,9 +54,12 @@ export function Gacha() {
       });
       refetchStats();
       refetchRecords();
+      setError(null);
       alert(`导入成功！新增 ${result.imported} 条，跳过 ${result.duplicates} 条重复`);
     } catch (e) {
-      alert(`导入失败：${e}`);
+      const msg = `导入失败：${e}`;
+      setError(msg);
+      console.error(msg);
     }
   };
 
@@ -128,6 +133,24 @@ export function Gacha() {
           refetchRecords();
         }}
       />
+
+      {error && (
+        <div className="fixed bottom-4 right-4 z-50 max-w-md">
+          <div className="bg-red-50 border border-red-200 rounded-lg p-3 shadow-lg">
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-xs font-medium text-red-600">错误</span>
+              <button onClick={() => setError(null)} className="text-red-400 hover:text-red-600 text-xs">✕</button>
+            </div>
+            <textarea
+              readOnly
+              value={error}
+              className="w-full text-xs text-red-700 bg-transparent border-none resize-none outline-none"
+              rows={3}
+              onClick={(e) => (e.target as HTMLTextAreaElement).select()}
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 }
