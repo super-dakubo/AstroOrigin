@@ -209,31 +209,34 @@ pub async fn import_gacha_screenshot(
             let concat: String = rw.iter().map(|w| w.text.trim()).collect::<Vec<_>>().join("");
             if !concat.contains("对象类型") || !concat.contains("跃迁时间") { continue; }
 
-            // 表头行的 4 个列名一定有明显 X 间隙
-            // 每个列名内部字间距小，列间间距大
+            // 表头行：每个列名是一个独立词（PP-OCRv4）或多个字（WinRT OCR）
+            // 词间 gap 较大的位置就是列边界
             let gaps: Vec<(usize, f64)> = rw.windows(2).enumerate()
                 .map(|(i, pair)| (i, pair[1].x - (pair[0].x + pair[0].width)))
                 .filter(|(_, g)| *g > 0.0)
                 .collect();
-            // 最大 3 个 gap 分隔 4 个列名
+            // 最多取 3 个最大 gap 分隔 4 个列名；不足 3 个 gap（例如每列正好 1 个词时只有 3 个 gap）
+            // 也继续处理，每个 gap 切分一个词
+            let gap_count = gaps.len().min(3);
             let mut sorted = gaps.clone();
             sorted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-            let split_idx: Vec<usize> = sorted.iter().take(gaps.len().min(3)).map(|(i, _)| *i).collect();
-
-            if split_idx.len() < 3 { /* 不足 3 个间隙，跳过 */ break; }
-            let mut split_idx = split_idx;
+            let mut split_idx: Vec<usize> = sorted.iter().take(gap_count).map(|(i, _)| *i).collect();
             split_idx.sort();
+
+            if split_idx.len() < 3 && rw.len() > 4 {
+                // Windows OCR 时代：16+ 个字却只有不到 3 个大 gap，说明此行不是表头
+                eprintln!("[WARP]   header row has {} words but only {} gaps, skipping", rw.len(), split_idx.len());
+                break;
+            }
 
             let mut start = 0usize;
             for si in &split_idx {
                 let end = *si;
-                if end > start {
-                    let xs: Vec<f64> = rw[start..=end].iter().map(|w| w.x).collect();
-                    let x_min = xs.iter().cloned().fold(f64::MAX, f64::min);
-                    let x_max = rw[start..=end].iter()
-                        .map(|w| w.x + w.width).fold(f64::MIN, f64::max);
-                    hdr_cols.push((x_min, x_max));
-                }
+                let xs: Vec<f64> = rw[start..=end].iter().map(|w| w.x).collect();
+                let x_min = xs.iter().cloned().fold(f64::MAX, f64::min);
+                let x_max = rw[start..=end].iter()
+                    .map(|w| w.x + w.width).fold(f64::MIN, f64::max);
+                hdr_cols.push((x_min, x_max));
                 start = *si + 1;
             }
             // 最后一段
@@ -391,7 +394,8 @@ pub async fn delete_gacha_record(
 fn normalize_date(s: &str) -> String {
     // 先替换常见 OCR 错误字符
     let s = s.replace('·', "-").replace('：', ":").replace('厶', "4");
-    // 去掉空格（OCR 有时会在数字间插空格）
+    // 去掉 PP-OCRv4 的 [UNK] 标记和空格
+    let s = s.replace("[UNK]", "");
     let compact: String = s.chars().filter(|c| !c.is_whitespace()).collect();
     eprintln!("[DATE] normalize: {:?} -> {:?}", s, compact);
 
@@ -505,6 +509,8 @@ mod tests {
         assert_eq!(super::normalize_date("2026-05-2723:05:36"), "2026-05-27 23:05:36");
         // OCR 误识别
         assert_eq!(super::normalize_date("2026·05·2厶23：05：36"), "2026-05-24 23:05:36");
+        // PP-OCRv4 [UNK] 标记
+        assert_eq!(super::normalize_date("2026-05-27[UNK]23:05:36"), "2026-05-27 23:05:36");
     }
 
     #[test]
