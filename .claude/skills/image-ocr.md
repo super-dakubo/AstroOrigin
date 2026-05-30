@@ -28,24 +28,18 @@ geo-types = "0.7"  # pure-onnx-ocr 的传递依赖
 
 ### 2. 模型文件
 
-下载 PP-OCRv4 ONNX 模型到 `assets/models/`：
+PP-OCRv4 ONNX 文件在 `src-tauri/assets/models/` 目录下，已预下载：
 
-```bash
-mkdir -p src-tauri/assets/models
-cd src-tauri/assets/models
+| 文件 | 大小 | 用途 |
+| --- | --- | --- |
+| `ch_PP-OCRv4_det_infer.onnx` | ~4.6 MB | 文字检测模型 |
+| `ch_PP-OCRv4_rec_infer.onnx` | ~11 MB | 文字识别模型 |
+| `ppocr_keys_v1.txt` | ~26 KB | 中文字符表 |
 
-# 检测模型 ~4.6MB
-curl -L -o ch_PP-OCRv4_det_infer.onnx \
-  "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.4.0/onnx/PP-OCRv4/det/ch_PP-OCRv4_det_infer.onnx"
-
-# 识别模型 ~11MB
-curl -L -o ch_PP-OCRv4_rec_infer.onnx \
-  "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.4.0/onnx/PP-OCRv4/rec/ch_PP-OCRv4_rec_infer.onnx"
-
-# 字符表 ~26KB
-curl -L -o ppocr_keys_v1.txt \
-  "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.4.0/paddle/PP-OCRv4/rec/ch_PP-OCRv4_rec_infer/ppocr_keys_v1.txt"
-```
+> 模型来源：RapidOCR（ModelScope CDN）。如需在其他机器部署，从以下 URL 下载：
+> - 检测: `https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.4.0/onnx/PP-OCRv4/det/ch_PP-OCRv4_det_infer.onnx`
+> - 识别: `https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.4.0/onnx/PP-OCRv4/rec/ch_PP-OCRv4_rec_infer.onnx`
+> - 字符表: `https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.4.0/paddle/PP-OCRv4/rec/ch_PP-OCRv4_rec_infer/ppocr_keys_v1.txt`
 
 ## 模块结构
 
