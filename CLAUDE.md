@@ -27,10 +27,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - 所有传给前端的结构体必须标注 `#[derive(Serialize, Deserialize)] #[serde(rename_all = "camelCase")]`
 - 数据库操作必须封装在 `tokio::task::spawn_blocking` 中调用（`rusqlite::Connection` 非 Send）
 - 使用 `r2d2` 连接池，不直接用 `Mutex<Connection>`
-- `windows` crate 只启用需要的 features，禁止全量引入或 `use windows::*`
-  当前启用：`Foundation_Collections`、`Globalization`、`Graphics_Imaging`、`Media_Ocr`、`Storage_Streams`、`UI_Notifications`、`Win32_Foundation`、`Win32_UI_WindowsAndMessaging`
+- `pure-onnx-ocr` 引擎内部使用了 `RefCell`（非 `Send + Sync`），通过 `Mutex` + `unsafe impl Send/Sync` 包装为线程安全
 - 使用 `anyhow` 处理错误，Tauri 命令返回 `Result<T, String>`
-- 图片处理仅用 `image` crate（裁剪、颜色直方图），不用 `imageproc`（编译过重）
+- 图片处理仅用 `image` crate（加载、裁剪），不用 `imageproc`（编译过重）
 - 进程列表扫描用 `sysinfo`，日期时间用 `chrono`
 
 ## 前端代码规范
@@ -62,12 +61,14 @@ d:\code\AstroOrigin/
 │   ├── stores/                  # Zustand stores
 │   └── lib/                     # 常量、类型定义
 ├── src-tauri/                   # Rust 后端 (Tauri)
+│   ├── assets/models/           # PP-OCRv4 ONNX 模型文件（~15MB）
 │   ├── src/
 │   │   ├── lib.rs               # Tauri Builder + command 注册
 │   │   ├── main.rs              # 程序入口
 │   │   ├── commands/            # Tauri commands（按模块分）
 │   │   ├── game/                # GameKind 枚举、特征定义
-│   │   ├── ocr.rs               # Windows.Media.Ocr 封装
+│   │   ├── ocr.rs               # 通用 OCR 入口（ocr_image → Vec<OcrWord>）
+│   │   ├── paddle.rs            # PP-OCRv4 引擎封装（SafeOcrEngine + Mutex）
 │   │   ├── db.rs                # r2d2 连接池 + 表迁移
 │   │   └── error.rs             # anyhow 包装
 │   ├── tauri.conf.json          # 安全配置（CSP 锁定，无危险权限）
@@ -109,8 +110,11 @@ React Component → useTauriQuery (react-query) → invoke → Tauri Command
 ## 关键设计决策
 
 - **文件对话框 + 截图导入**：用户通过文件选择器导入截图，不走拖拽
-- **OCR 管线**：整图 OCR → 坐标聚类行列 → 按表头 X 范围分列 → 模糊匹配 → 去重入库（全部在 `spawn_blocking` 中执行）
-- **表格解析**：从表头行计算列 X 边界，所有数据行共用此边界分列。不用间隙阈值，用表头 X 坐标做空间比较
+- **OCR 引擎**：PP-OCRv4（ONNX + tract 纯 Rust 推理），**已替换 Windows.Media.Ocr**。模型文件（~15MB）在 `assets/models/`，引擎通过 `OnceLock` + `Mutex` 延迟初始化，线程安全
+- **OCR 管线**：整图 OCR（`ocr::ocr_image`） → 坐标聚类行列 → 按表头 X 范围分列 → 模糊匹配 → 去重入库（全部在 `spawn_blocking` 中执行）
+- **表格解析**：从表头行计算列边界区间，所有数据行共用此区间做列分配。PP-OCRv4 输出按词组而非单字，列检测兼容 1 词/列和 N 字/列两种模式
+- **进度上报**：每张图 4 阶段（检测→识别→解析→入库），通过全局 `APP_HANDLE` + Tauri event 上报，前端用百分比圆环 + 展开式进度条展示
+- **批量导入**：`import_gacha_screenshots` 命令支持多文件选择，顺序处理，失败跳过
 - **宽容策略**：OCR 识别不准时保留空字段入库，用户可通过 ✏️ 编辑修复。不因单格识别失败丢弃整行
 - **去重**：数据库 UNIQUE 索引 `(game_kind, item_name, record_date)`，`INSERT OR IGNORE`
 - **游戏切换**：使用 Zustand store + CSS 变量，不重启应用
@@ -123,7 +127,7 @@ React Component → useTauriQuery (react-query) → invoke → Tauri Command
 3. Rust 结构体是否加了 `#[serde(rename_all = "camelCase")]`？
 4. 数据库操作是否在 `spawn_blocking` 中执行？
 5. 数据库连接用 r2d2 连接池，不用裸 `Mutex<Connection>`？
-6. windows crate 是否只开了需要的 features？
+6. `pure-onnx-ocr` 的 `OcrEngine` 是否用了 `Mutex` + `unsafe impl Send/Sync` 包装？
 7. tauri.conf.json 是否未开启 shell.open 或其他危险权限？
 8. Rust 错误是否用 anyhow？返回前转成 `String`
 9. 是否擅自升降了 package.json / Cargo.toml 主版本号？
