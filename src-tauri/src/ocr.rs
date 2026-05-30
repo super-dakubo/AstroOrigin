@@ -1,6 +1,5 @@
-use anyhow::Result;
-use image::GenericImageView;
-use std::io::Write;
+use anyhow::{Context, Result};
+use std::sync::OnceLock;
 
 /// OCR 识别出的单个文字/词，带坐标
 #[derive(Debug, Clone)]
@@ -12,78 +11,37 @@ pub struct OcrWord {
     pub height: f64,
 }
 
+static OCR_INIT: OnceLock<Result<()>> = OnceLock::new();
+
+fn ensure_engine_initialized() -> Result<()> {
+    let result = OCR_INIT.get_or_init(|| {
+        let model_dir = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+            .unwrap_or_else(|| std::env::current_dir().unwrap())
+            .join("assets")
+            .join("models");
+
+        let det_path = model_dir.join("ch_PP-OCRv4_det_infer.onnx");
+        let rec_path = model_dir.join("ch_PP-OCRv4_rec_infer.onnx");
+        let keys_path = model_dir.join("ppocr_keys_v1.txt");
+
+        eprintln!("[OCR] Initializing PP-OCRv4 engine from: {:?}", model_dir);
+
+        crate::paddle::PaddleOcrEngine::init(
+            det_path.to_str().context("Invalid det model path")?,
+            rec_path.to_str().context("Invalid rec model path")?,
+            keys_path.to_str().context("Invalid keys path")?,
+        )
+    });
+    result.as_ref().map_err(|e| anyhow::anyhow!("{}", e)).copied()
+}
+
 /// 对图片字节进行 OCR，返回文字及其坐标
-/// 坐标是原始图片尺寸（内部 2x 放大后换算回原始坐标）
+/// 坐标是原始图片尺寸
 pub fn ocr_image(image_data: &[u8]) -> Result<Vec<OcrWord>> {
-    let img = image::load_from_memory(image_data)?;
-    let (orig_w, orig_h) = img.dimensions();
-
-    // 灰度化 + 2x 放大，提高识别率
-    let gray = img.grayscale();
-    let enlarged = image::imageops::resize(
-        &gray,
-        gray.width() * 2,
-        gray.height() * 2,
-        image::imageops::FilterType::CatmullRom,
-    );
-    let mut png_buf = std::io::Cursor::new(Vec::new());
-    enlarged.write_to(&mut png_buf, image::ImageFormat::Png)?;
-    let png_bytes = png_buf.into_inner();
-
-    let temp_dir = std::env::temp_dir();
-    let temp_path = temp_dir.join(format!("astrorigin_ocr_{}.png", std::process::id()));
-    let mut file = std::fs::File::create(&temp_path)?;
-    file.write_all(&png_bytes)?;
-    file.flush()?;
-    drop(file);
-
-    let path_str = temp_path.to_str().ok_or_else(|| anyhow::anyhow!("Invalid temp path"))?;
-    let file = windows::Storage::StorageFile::GetFileFromPathAsync(
-        &windows::core::HSTRING::from(path_str),
-    )?.get()?;
-
-    let stream = file.OpenAsync(windows::Storage::FileAccessMode::Read)?.get()?;
-
-    let language =
-        windows::Globalization::Language::CreateLanguage(&windows::core::HSTRING::from("zh-CN"))?;
-
-    let engine = windows::Media::Ocr::OcrEngine::TryCreateFromLanguage(&language)?;
-
-    let decoder = windows::Graphics::Imaging::BitmapDecoder::CreateAsync(&stream)?.get()?;
-    let frame = decoder.GetFrameAsync(0)?.get()?;
-    let bitmap = frame.GetSoftwareBitmapAsync()?.get()?;
-
-    let result = engine.RecognizeAsync(&bitmap)?.get()?;
-
-    let _ = std::fs::remove_file(&temp_path);
-
-    // 提取带坐标的文字，坐标从 2x 放大回退到原始尺寸
-    let scale_x = orig_w as f64 / (enlarged.width() as f64);
-    let scale_y = orig_h as f64 / (enlarged.height() as f64);
-
-    let mut words = Vec::new();
-    for line in result.Lines()?.into_iter() {
-        for word in line.Words()?.into_iter() {
-            let text = match word.Text() {
-                Ok(t) => t.to_string(),
-                Err(_) => continue,
-            };
-            if text.trim().is_empty() { continue; }
-            let rect = match word.BoundingRect() {
-                Ok(r) => r,
-                Err(_) => continue,
-            };
-            words.push(OcrWord {
-                text,
-                x: rect.X as f64 * scale_x,
-                y: rect.Y as f64 * scale_y,
-                width: rect.Width as f64 * scale_x,
-                height: rect.Height as f64 * scale_y,
-            });
-        }
-    }
-
-    Ok(words)
+    ensure_engine_initialized()?;
+    crate::paddle::PaddleOcrEngine::recognize(image_data)
 }
 
 /// 规范化物品名称

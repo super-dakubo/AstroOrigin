@@ -27,16 +27,7 @@ anyhow = "1"
 chrono = "0.4"
 image = { version = "0.25", default-features = false, features = ["png"] }
 sysinfo = "0.33"
-windows = { version = "0.58", features = [
-    "Foundation_Collections",
-    "Globalization",
-    "Graphics_Imaging",
-    "Media_Ocr",
-    "Storage_Streams",
-    "UI_Notifications",
-    "Win32_Foundation",
-    "Win32_UI_WindowsAndMessaging",
-] }
+pure-onnx-ocr = "0.1"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

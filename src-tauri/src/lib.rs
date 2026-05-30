@@ -3,6 +3,7 @@ mod db;
 mod error;
 mod game;
 mod ocr;
+mod paddle;
 
 use db::init_pool;
 use tauri::Manager;

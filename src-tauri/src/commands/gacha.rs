@@ -247,10 +247,7 @@ pub async fn import_gacha_screenshot(
             return Err("无法定位表头4列，截图可能不完整".to_string());
         }
 
-        // ── 4. 对表头下所有行，用表头 X 范围判断每字属于哪列 ──
-        let hdr_x = [
-            hdr_cols[0].0, hdr_cols[1].0, hdr_cols[2].0, hdr_cols[3].0,
-        ]; // 每列起始 X
+        // ── 4. 对表头下所有行，用表头列区间判断每个字属于哪列 ──
         let mut data_rows: Vec<[String; 4]> = Vec::new();
         let mut found_header = false;
 
@@ -270,11 +267,24 @@ pub async fn import_gacha_screenshot(
             let mut cells: [Vec<String>; 4] = Default::default();
             for w in &rw {
                 let cx = w.x + w.width / 2.0;
-                // 往后看：字的 X 落在哪一列的起始之后，就属于那一列
-                let mut ci = 3usize;
-                for (hi, &hx) in hdr_x.iter().enumerate().rev() {
-                    if cx >= hx { ci = hi; break; }
+                // 用列区间匹配替代单点比较，5px 容差应对 OCR 坐标漂移
+                let mut ci: Option<usize> = None;
+                for (hi, &(col_start, col_end)) in hdr_cols.iter().enumerate() {
+                    if cx >= col_start - 5.0 && cx < col_end + 5.0 {
+                        ci = Some(hi);
+                        break;
+                    }
                 }
+                // fallback：未落入任何区间时分配到最近列起始点
+                let ci = ci.unwrap_or_else(|| {
+                    hdr_cols.iter()
+                        .enumerate()
+                        .min_by(|(_, &(s1, _)), (_, &(s2, _))| {
+                            (cx - s1).abs().partial_cmp(&(cx - s2).abs()).unwrap_or(std::cmp::Ordering::Equal)
+                        })
+                        .map(|(i, _)| i)
+                        .unwrap_or(3)
+                });
                 cells[ci].push(w.text.trim().to_string());
             }
             let merged: [String; 4] = [
