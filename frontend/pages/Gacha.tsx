@@ -28,6 +28,7 @@ interface ImportProgress {
   current: number;
   total: number;
   file?: string;
+  status?: string;
   done?: boolean;
 }
 
@@ -49,6 +50,8 @@ export function Gacha() {
   const updateMutation = useTauriMutation<boolean, { id: number; itemName: string; starRating: number; recordDate: string; isWon: boolean }>('update_gacha_record');
   const [error, setError] = useState<string | null>(null);
   const [progress, setProgress] = useState<ImportProgress | null>(null);
+  const [progressExpanded, setProgressExpanded] = useState(false);
+  const [currentFile, setCurrentFile] = useState<string>('');
   const unlistenRef = useRef<(() => void) | null>(null);
 
   // 监听导入进度事件
@@ -56,7 +59,14 @@ export function Gacha() {
     const setup = async () => {
       if (unlistenRef.current) unlistenRef.current();
       unlistenRef.current = await listen<ImportProgress>('import-progress', (event) => {
-        setProgress(event.payload);
+        const p = event.payload;
+        if (p.status === 'processing') {
+          setCurrentFile(p.file || '');
+        }
+        setProgress(p);
+        if (p.done) {
+          setTimeout(() => { setProgressExpanded(false); setCurrentFile(''); }, 2000);
+        }
       });
     };
     setup();
@@ -181,24 +191,47 @@ export function Gacha() {
         />
       </div>
 
-      {/* 进度条 */}
-      {progress && (
-        <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-sm text-blue-700">
-              正在处理 {progress.current}/{progress.total}
-              {progress.file && <> — {progress.file.split(/[/\\]/).pop()}</>}
-            </span>
-            <span className="text-xs text-blue-500">
-              {Math.round((progress.current / progress.total) * 100)}%
+      {/* 进度：默认紧凑百分比，点击展开详情 */}
+      {progress && !progress.done && (
+        <div className="flex items-center gap-3">
+          <div
+            className="flex items-center gap-2 cursor-pointer select-none"
+            onClick={() => setProgressExpanded(!progressExpanded)}
+          >
+            <div className="relative w-8 h-8">
+              <svg className="w-8 h-8 -rotate-90" viewBox="0 0 32 32">
+                <circle cx="16" cy="16" r="14" fill="none" stroke="#e5e7eb" strokeWidth="3" />
+                <circle
+                  cx="16" cy="16" r="14" fill="none"
+                  stroke="#3b82f6" strokeWidth="3" strokeLinecap="round"
+                  strokeDasharray={`${(progress.current / progress.total) * 87.96} 87.96`}
+                />
+              </svg>
+              <span className="absolute inset-0 flex items-center justify-center text-[10px] font-semibold text-blue-600">
+                {Math.round((progress.current / progress.total) * 100)}%
+              </span>
+            </div>
+            <span className="text-sm text-gray-600">
+              {progressExpanded ? '收起' : '导入中...'}
             </span>
           </div>
-          <div className="w-full bg-blue-200 rounded-full h-2">
-            <div
-              className="bg-blue-500 h-2 rounded-full transition-all duration-200"
-              style={{ width: `${(progress.current / progress.total) * 100}%` }}
-            />
-          </div>
+
+          {/* 展开详情 */}
+          {progressExpanded && (
+            <div className="flex-1 bg-blue-50 border border-blue-200 rounded-lg p-3">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-sm text-blue-700">
+                  {currentFile ? currentFile.split(/[/\\]/).pop() : ''} ({progress.current}/{progress.total})
+                </span>
+              </div>
+              <div className="w-full bg-blue-200 rounded-full h-2">
+                <div
+                  className="bg-blue-500 h-2 rounded-full transition-all duration-200"
+                  style={{ width: `${(progress.current / progress.total) * 100}%` }}
+                />
+              </div>
+            </div>
+          )}
         </div>
       )}
 

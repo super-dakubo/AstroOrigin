@@ -353,11 +353,12 @@ pub async fn import_gacha_screenshots(
         let mut total_duplicates = 0usize;
 
         for (idx, path) in image_paths.iter().enumerate() {
-            // 发进度事件
+            // 当前文件开始处理
             let _ = app_handle.emit("import-progress", serde_json::json!({
-                "current": idx + 1,
+                "current": idx,
                 "total": total,
                 "file": path,
+                "status": "processing",
             }));
 
             eprintln!("[BATCH] [{}/{}] Processing: {}", idx + 1, total, path);
@@ -366,7 +367,12 @@ pub async fn import_gacha_screenshots(
                 Ok(b) => b,
                 Err(e) => {
                     eprintln!("[BATCH]   Skip: read error {}", e);
-                    total_duplicates += 1; // 算作已过
+                    total_duplicates += 1;
+                    let _ = app_handle.emit("import-progress", serde_json::json!({
+                        "current": idx + 1,
+                        "total": total,
+                        "status": "done",
+                    }));
                     continue;
                 }
             };
@@ -382,6 +388,13 @@ pub async fn import_gacha_screenshots(
                     total_duplicates += 1;
                 }
             }
+
+            // 当前文件处理完成
+            let _ = app_handle.emit("import-progress", serde_json::json!({
+                "current": idx + 1,
+                "total": total,
+                "status": "done",
+            }));
         }
 
         // 完成事件
