@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python -c \"import subprocess,json;tsc=subprocess.run(['node','node_modules/typescript/bin/tsc','--noEmit'],cwd='d:/code/AstroOrigin',capture_output=True,text=True);cargo=subprocess.run(['cargo','check','--manifest-path','src-tauri/Cargo.toml'],capture_output=True,text=True);errs=[];tsc.returncode!=0 and errs.append('TS:'+tsc.stderr[:200]);cargo.returncode!=0 and errs.append('Rust:'+cargo.stderr[:200]);msg=(chr(0x2705)+' Build passed') if not errs else (chr(0x274c)+' Build failed: '+' | '.join(errs));print(json.dumps({'systemMessage':msg}))\" 2>/dev/null || true",
+            "timeout": 120,
+            "statusMessage": "Verifying build..."
+          }
+        ]
+      }
+    ]
+  }
+}
