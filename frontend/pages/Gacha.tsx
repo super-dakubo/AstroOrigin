@@ -7,12 +7,22 @@ import { open } from '@tauri-apps/plugin-dialog'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { useState, useEffect, useRef } from 'react'
 
+interface BannerStats {
+  bannerType: string
+  totalPulls: number
+  fiveStarCount: number
+  lostCount: number
+  currentPity: number
+  avgPullsPerFiveStar: number
+}
+
 interface GachaStats {
   totalPulls: number
   fiveStarCount: number
   lostCount: number
   currentPity: number
   avgPullsPerFiveStar: number
+  byBanner: BannerStats[]
 }
 
 interface GachaRecord {
@@ -47,12 +57,21 @@ const PHASE_LABELS: Record<string, string> = {
   save: '💾 入库中'
 }
 
+const BANNER_TABS: Record<string, string[]> = {
+  starrail: ['全部', '角色活动', '光锥活动', '常驻'],
+  genshin: ['全部', '角色活动', '武器活动', '常驻']
+}
+
 export function Gacha() {
   const currentGame = useGameStore((s) => s.currentGame)
   const theme = useGameStore((s) => s.theme)
 
   const [page, setPage] = useState(1)
-  const pageSize = 50
+  const [bannerTab, setBannerTab] = useState<string>('全部')
+  const [starFilter, setStarFilter] = useState<number | null>(null)
+  const [sortBy, setSortBy] = useState<string>('date')
+  const [sortOrder, setSortOrder] = useState<string>('desc')
+  const [pageSize, setPageSize] = useState<number>(20)
 
   const { data: stats, refetch: refetchStats } = useTauriQuery<GachaStats>('get_gacha_stats', {
     gameKind: currentGame
@@ -62,13 +81,22 @@ export function Gacha() {
     {
       gameKind: currentGame,
       page,
-      pageSize
+      pageSize,
+      banner: bannerTab !== '全部' ? bannerTab : null,
+      starFilter,
+      sortBy,
+      sortOrder
     }
   )
 
-  // 切游戏时重置页码
+  // 切游戏时重置所有筛选状态
   useEffect(() => {
     setPage(1)
+    setBannerTab('全部')
+    setStarFilter(null)
+    setSortBy('date')
+    setSortOrder('desc')
+    setPageSize(20)
   }, [currentGame])
 
   const importMutation = useTauriMutation<
@@ -190,6 +218,16 @@ export function Gacha() {
   const records = recordsResponse?.records ?? []
   const total = recordsResponse?.total ?? 0
 
+  const currentBannerStats =
+    bannerTab !== '全部' ? stats?.byBanner?.find((b) => b.bannerType.includes(bannerTab)) : null
+
+  const displayStats = currentBannerStats || stats
+
+  const bannerBreakdown =
+    stats?.byBanner
+      ?.map((b) => `${b.bannerType.replace('跃迁', '').replace('祈愿', '')} ${b.totalPulls}`)
+      .join(' / ') ?? ''
+
   const chartData = records
     .filter((r) => r.starRating === 5)
     .map((r, i, arr) => ({
@@ -204,9 +242,6 @@ export function Gacha() {
       isFiveStar: true,
       isWon: r.isWon
     }))
-
-  const lostRate =
-    stats && stats.fiveStarCount > 0 ? Math.round((stats.lostCount / stats.fiveStarCount) * 100) : 0
 
   const isImporting = importMutation.isPending || batchImportMutation.isPending
 
@@ -239,24 +274,77 @@ export function Gacha() {
         </div>
       </div>
 
+      {/* 卡池 Tabs */}
+      <div className="flex gap-1 border-b border-gray-200 pb-2">
+        {BANNER_TABS[currentGame === 'genshin' ? 'genshin' : 'starrail'].map((tab) => (
+          <button
+            key={tab}
+            onClick={() => {
+              setBannerTab(tab)
+              setPage(1)
+            }}
+            className={`px-4 py-1.5 text-sm rounded-t-lg transition-colors ${
+              bannerTab === tab
+                ? 'bg-white text-gray-900 font-medium border border-b-0 border-gray-200 -mb-[1px]'
+                : 'text-gray-500 hover:text-gray-700'
+            }`}
+          >
+            {tab}
+          </button>
+        ))}
+      </div>
+
+      {/* 统计卡片 */}
       <div className="grid grid-cols-4 gap-4">
-        <StatCard label="累计抽数" value={stats?.totalPulls?.toLocaleString() ?? '--'} />
+        <StatCard
+          label="累计抽数"
+          value={displayStats?.totalPulls?.toLocaleString() ?? '--'}
+          sub={bannerTab === '全部' && bannerBreakdown ? bannerBreakdown : undefined}
+        />
         <StatCard
           label="5⭐ 出货"
-          value={stats?.fiveStarCount ?? '--'}
-          sub={stats ? `平均 ${stats.avgPullsPerFiveStar.toFixed(1)} 抽` : undefined}
+          value={displayStats?.fiveStarCount ?? '--'}
+          sub={
+            displayStats
+              ? displayStats.fiveStarCount > 0
+                ? `平均 ${displayStats.avgPullsPerFiveStar.toFixed(1)} 抽`
+                : '暂无出货'
+              : undefined
+          }
           subColor={theme.primary}
         />
         <StatCard
           label="当前保底"
-          value={stats?.currentPity ?? '--'}
-          sub={stats ? `距保底 ${90 - stats.currentPity} 抽` : undefined}
+          value={displayStats?.currentPity ?? '--'}
+          sub={
+            displayStats
+              ? bannerTab.includes('光锥') || bannerTab.includes('武器')
+                ? `距保底 ${80 - displayStats.currentPity} 抽`
+                : `距保底 ${90 - displayStats.currentPity} 抽`
+              : undefined
+          }
           subColor="#D4433B"
         />
         <StatCard
           label="歪率"
-          value={stats ? `${lostRate}%` : '--'}
-          sub={stats ? `${stats.lostCount} / ${stats.fiveStarCount} 歪了` : undefined}
+          value={
+            stats && stats.fiveStarCount > 0
+              ? bannerTab !== '全部'
+                ? currentBannerStats && currentBannerStats.fiveStarCount > 0
+                  ? `${Math.round((currentBannerStats.lostCount / currentBannerStats.fiveStarCount) * 100)}%`
+                  : '--'
+                : `${Math.round((stats.lostCount / stats.fiveStarCount) * 100)}%`
+              : '--'
+          }
+          sub={
+            bannerTab !== '全部'
+              ? currentBannerStats
+                ? `${currentBannerStats.lostCount} / ${currentBannerStats.fiveStarCount}`
+                : undefined
+              : stats
+                ? `${stats.lostCount} / ${stats.fiveStarCount} 歪了`
+                : undefined
+          }
           subColor="#D4433B"
         />
       </div>
@@ -311,6 +399,61 @@ export function Gacha() {
           )}
         </div>
       )}
+
+      {/* 筛选栏 */}
+      <div className="flex gap-4 items-center flex-wrap">
+        <div className="flex items-center gap-2">
+          <label className="text-xs text-gray-500">星级</label>
+          <select
+            value={starFilter ?? ''}
+            onChange={(e) => {
+              setStarFilter(e.target.value ? Number(e.target.value) : null)
+              setPage(1)
+            }}
+            className="px-2 py-1 border border-gray-200 rounded-lg text-sm bg-white"
+          >
+            <option value="">全部</option>
+            <option value="5">5★</option>
+            <option value="4">4★</option>
+            <option value="3">3★</option>
+          </select>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <label className="text-xs text-gray-500">排序</label>
+          <select
+            value={`${sortBy}-${sortOrder}`}
+            onChange={(e) => {
+              const [by, order] = e.target.value.split('-')
+              setSortBy(by)
+              setSortOrder(order)
+              setPage(1)
+            }}
+            className="px-2 py-1 border border-gray-200 rounded-lg text-sm bg-white"
+          >
+            <option value="date-desc">日期 ↓</option>
+            <option value="date-asc">日期 ↑</option>
+            <option value="star-desc">星级 ↓</option>
+            <option value="star-asc">星级 ↑</option>
+          </select>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <label className="text-xs text-gray-500">每页</label>
+          <select
+            value={pageSize}
+            onChange={(e) => {
+              setPageSize(Number(e.target.value))
+              setPage(1)
+            }}
+            className="px-2 py-1 border border-gray-200 rounded-lg text-sm bg-white"
+          >
+            <option value={20}>20</option>
+            <option value={50}>50</option>
+            <option value={100}>100</option>
+          </select>
+        </div>
+      </div>
 
       <LuckChart records={chartData} />
       <RecordTable
