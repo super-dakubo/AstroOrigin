@@ -1,5 +1,5 @@
-import { useTauriQuery, useTauriMutation } from '../hooks/useTauriQuery';
-import { useGameStore } from '../stores/gameStore';
+import { useTauriQuery, useTauriMutation } from '../hooks/useTauriQuery'
+import { useGameStore } from '../stores/gameStore'
 import { StatCard } from '../components/StatCard'
 import { LuckChart } from '../components/LuckChart'
 import { RecordTable } from '../components/RecordTable'
@@ -19,9 +19,16 @@ interface GachaRecord {
   id: number
   gameKind: string
   itemName: string
+  itemType: string
+  bannerType: string
   starRating: number
   recordDate: string
   isWon: boolean
+}
+
+interface GachaRecordsResponse {
+  records: GachaRecord[]
+  total: number
 }
 
 interface ImportProgress {
@@ -44,16 +51,25 @@ export function Gacha() {
   const currentGame = useGameStore((s) => s.currentGame)
   const theme = useGameStore((s) => s.theme)
 
+  const [page, setPage] = useState(1)
+  const pageSize = 50
+
   const { data: stats, refetch: refetchStats } = useTauriQuery<GachaStats>('get_gacha_stats', {
     gameKind: currentGame
   })
-  const { data: records, refetch: refetchRecords } = useTauriQuery<GachaRecord[]>(
+  const { data: recordsResponse, refetch: refetchRecords } = useTauriQuery<GachaRecordsResponse>(
     'get_gacha_records',
     {
       gameKind: currentGame,
-      limit: 200
+      page,
+      pageSize
     }
   )
+
+  // 切游戏时重置页码
+  useEffect(() => {
+    setPage(1)
+  }, [currentGame])
 
   const importMutation = useTauriMutation<
     { imported: number; duplicates: number },
@@ -66,8 +82,17 @@ export function Gacha() {
   const deleteMutation = useTauriMutation<boolean, { id: number }>('delete_gacha_record')
   const updateMutation = useTauriMutation<
     boolean,
-    { id: number; itemName: string; starRating: number; recordDate: string; isWon: boolean }
+    {
+      id: number
+      itemName: string
+      itemType: string
+      bannerType: string
+      starRating: number
+      recordDate: string
+      isWon: boolean
+    }
   >('update_gacha_record')
+
   const [error, setError] = useState<string | null>(null)
   const [progress, setProgress] = useState<ImportProgress | null>(null)
   const [progressExpanded, setProgressExpanded] = useState(false)
@@ -111,7 +136,7 @@ export function Gacha() {
       refetchStats()
       refetchRecords()
       setError(null)
-      alert(`导入成功！新增 ${result.imported} 条，跳过 ${result.duplicates} 条重复`)
+      alert(`导入成功！新增 ${result.imported} 条`)
     } catch (e) {
       const msg = `导入失败：${e}`
       setError(msg)
@@ -137,7 +162,7 @@ export function Gacha() {
       refetchRecords()
       setError(null)
       setProgress(null)
-      alert(`批量导入完成！新增 ${result.imported} 条，跳过 ${result.duplicates} 条`)
+      alert(`批量导入完成！新增 ${result.imported} 条`)
     } catch (e) {
       const msg = `批量导入失败：${e}`
       setError(msg)
@@ -146,15 +171,34 @@ export function Gacha() {
     }
   }
 
-  const chartData = (records ?? [])
+  const handleToggleWon = async (id: number, newIsWon: boolean) => {
+    const record = records.find((r) => r.id === id)
+    if (!record) return
+    await updateMutation.mutateAsync({
+      id,
+      itemName: record.itemName,
+      itemType: record.itemType,
+      bannerType: record.bannerType,
+      starRating: record.starRating,
+      recordDate: record.recordDate,
+      isWon: newIsWon
+    })
+    refetchStats()
+    refetchRecords()
+  }
+
+  const records = recordsResponse?.records ?? []
+  const total = recordsResponse?.total ?? 0
+
+  const chartData = records
     .filter((r) => r.starRating === 5)
     .map((r, i, arr) => ({
       pulls:
         i === 0
-          ? records!.filter((rec) => rec.id < r.id).length + 1
+          ? records.filter((rec) => rec.id < r.id).length + 1
           : Math.abs(
-              records!.filter((rec) => rec.id <= r.id && rec.starRating === 5).length -
-                records!.filter((rec) => rec.id <= (arr[i - 1]?.id ?? 0) && rec.starRating === 5)
+              records.filter((rec) => rec.id <= r.id && rec.starRating === 5).length -
+                records.filter((rec) => rec.id <= (arr[i - 1]?.id ?? 0) && rec.starRating === 5)
                   .length
             ) || 1,
       isFiveStar: true,
@@ -270,7 +314,11 @@ export function Gacha() {
 
       <LuckChart records={chartData} />
       <RecordTable
-        records={records ?? []}
+        records={records}
+        total={total}
+        page={page}
+        pageSize={pageSize}
+        onPageChange={setPage}
         onDelete={async (id) => {
           await deleteMutation.mutateAsync({ id })
           refetchStats()
@@ -281,6 +329,7 @@ export function Gacha() {
           refetchStats()
           refetchRecords()
         }}
+        onToggleWon={handleToggleWon}
       />
 
       {error && (

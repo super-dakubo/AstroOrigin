@@ -5,6 +5,8 @@ interface GachaRecord {
   id: number
   gameKind: string
   itemName: string
+  itemType: string
+  bannerType: string
   starRating: number
   recordDate: string
   isWon: boolean
@@ -15,20 +17,44 @@ interface RecordTableProps {
   onDelete?: (id: number) => void
   onSave?: (
     id: number,
-    data: { itemName: string; starRating: number; recordDate: string; isWon: boolean }
+    data: {
+      itemName: string
+      itemType: string
+      bannerType: string
+      starRating: number
+      recordDate: string
+      isWon: boolean
+    }
   ) => void
-  knownNames?: string[]
+  onToggleWon?: (id: number, isWon: boolean) => void
+  page: number
+  total: number
+  pageSize: number
+  onPageChange: (page: number) => void
 }
 
 type EditState = {
   id: number
   itemName: string
+  itemType: string
+  bannerType: string
   starRating: number
   recordDate: string
   isWon: boolean
 } | null
 
-export function RecordTable({ records, onDelete, onSave }: RecordTableProps) {
+const TOTAL_PAGES_CAP = 9999
+
+export function RecordTable({
+  records,
+  onDelete,
+  onSave,
+  onToggleWon,
+  page,
+  total,
+  pageSize,
+  onPageChange
+}: RecordTableProps) {
   const [editing, setEditing] = useState<EditState>(null)
   const nameRef = useRef<HTMLInputElement>(null)
 
@@ -36,10 +62,14 @@ export function RecordTable({ records, onDelete, onSave }: RecordTableProps) {
     if (editing) nameRef.current?.focus()
   }, [editing])
 
+  const totalPages = Math.min(Math.ceil(total / pageSize) || 1, TOTAL_PAGES_CAP)
+
   const startEdit = (r: GachaRecord) => {
     setEditing({
       id: r.id,
       itemName: r.itemName,
+      itemType: r.itemType,
+      bannerType: r.bannerType,
       starRating: r.starRating,
       recordDate: r.recordDate,
       isWon: r.isWon
@@ -52,6 +82,8 @@ export function RecordTable({ records, onDelete, onSave }: RecordTableProps) {
     if (!editing) return
     onSave?.(editing.id, {
       itemName: editing.itemName,
+      itemType: editing.itemType,
+      bannerType: editing.bannerType,
       starRating: editing.starRating,
       recordDate: editing.recordDate,
       isWon: editing.isWon
@@ -69,11 +101,13 @@ export function RecordTable({ records, onDelete, onSave }: RecordTableProps) {
 
   return (
     <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-      <div className="grid grid-cols-[1.5fr_3fr_80px_80px_48px] gap-2 px-4 py-2.5 bg-gray-50 text-xs font-medium text-gray-400">
+      <div className="grid grid-cols-[1.5fr_0.6fr_0.8fr_2fr_60px_60px_30px] gap-2 px-4 py-2.5 bg-gray-50 text-xs font-medium text-gray-400 items-center">
         <span>日期</span>
+        <span>种类</span>
+        <span>卡池</span>
         <span>物品</span>
         <span>星级</span>
-        <span />
+        <span>结果</span>
         <span />
       </div>
       <div className="divide-y divide-gray-100">
@@ -84,12 +118,28 @@ export function RecordTable({ records, onDelete, onSave }: RecordTableProps) {
             return (
               <div
                 key={r.id}
-                className="grid grid-cols-[1.5fr_3fr_80px_80px_48px] gap-2 px-4 py-2 text-sm items-center bg-blue-50"
+                className="grid grid-cols-[1.5fr_0.6fr_0.8fr_2fr_60px_60px_30px] gap-2 px-4 py-2 text-sm items-center bg-blue-50"
               >
                 <input
                   className="w-full px-2 py-1 border border-blue-300 rounded text-sm"
                   value={editing.recordDate}
                   onChange={(e) => setEditing({ ...editing, recordDate: e.target.value })}
+                  onKeyDown={(e) =>
+                    e.key === 'Enter' ? saveEdit() : e.key === 'Escape' ? cancelEdit() : undefined
+                  }
+                />
+                <select
+                  className="w-full px-2 py-1 border border-blue-300 rounded text-sm"
+                  value={editing.itemType}
+                  onChange={(e) => setEditing({ ...editing, itemType: e.target.value })}
+                >
+                  <option value="角色">角色</option>
+                  <option value="光锥">光锥</option>
+                </select>
+                <input
+                  className="w-full px-2 py-1 border border-blue-300 rounded text-sm"
+                  value={editing.bannerType}
+                  onChange={(e) => setEditing({ ...editing, bannerType: e.target.value })}
                   onKeyDown={(e) =>
                     e.key === 'Enter' ? saveEdit() : e.key === 'Escape' ? cancelEdit() : undefined
                   }
@@ -104,7 +154,7 @@ export function RecordTable({ records, onDelete, onSave }: RecordTableProps) {
                   }
                 />
                 <input
-                  className="w-16 px-2 py-1 border border-blue-300 rounded text-sm text-center"
+                  className="w-14 px-2 py-1 border border-blue-300 rounded text-sm text-center"
                   value={editing.starRating}
                   onChange={(e) =>
                     setEditing({ ...editing, starRating: parseInt(e.target.value) || 0 })
@@ -144,10 +194,28 @@ export function RecordTable({ records, onDelete, onSave }: RecordTableProps) {
           return (
             <div
               key={r.id}
-              className="group grid grid-cols-[1.5fr_3fr_80px_80px_48px] gap-2 px-4 py-2.5 text-sm items-center"
+              className="group grid grid-cols-[1.5fr_0.6fr_0.8fr_2fr_60px_60px_30px] gap-2 px-4 py-2.5 text-sm items-center"
             >
               <span className={`${r.recordDate ? 'text-gray-900' : 'text-gray-300 italic'}`}>
                 {r.recordDate || '未识别'}
+              </span>
+              <span className="text-gray-500 text-xs">{r.itemType || ''}</span>
+              <span>
+                {r.bannerType ? (
+                  <span
+                    className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${
+                      r.bannerType.includes('角色')
+                        ? 'bg-blue-50 text-blue-600'
+                        : r.bannerType.includes('光锥') || r.bannerType.includes('武器')
+                          ? 'bg-purple-50 text-purple-600'
+                          : 'bg-gray-50 text-gray-500'
+                    }`}
+                  >
+                    {r.bannerType.replace('跃迁', '').replace('祈愿', '')}
+                  </span>
+                ) : (
+                  ''
+                )}
               </span>
               <span
                 className={`font-medium flex items-center gap-1.5 ${
@@ -185,11 +253,19 @@ export function RecordTable({ records, onDelete, onSave }: RecordTableProps) {
                 {r.starRating > 0 ? '★'.repeat(r.starRating) : '?'}
               </span>
               <span>
-                {r.starRating === 5 && !r.isWon && (
-                  <span className="text-xs text-red-500 font-medium">歪了</span>
-                )}
-                {r.starRating === 5 && r.isWon && (
-                  <span className="text-xs text-green-600 font-medium">欧 ✓</span>
+                {r.starRating === 5 ? (
+                  <button
+                    onClick={() => onToggleWon?.(r.id, !r.isWon)}
+                    className={`px-2 py-0.5 rounded text-xs font-medium cursor-pointer transition-colors ${
+                      r.isWon
+                        ? 'bg-green-50 text-green-600 hover:bg-green-100'
+                        : 'bg-red-50 text-red-500 hover:bg-red-100'
+                    }`}
+                  >
+                    {r.isWon ? '欧 ✓' : '歪了'}
+                  </button>
+                ) : (
+                  <span className="text-gray-300 text-xs">-</span>
                 )}
               </span>
               <button
@@ -202,6 +278,30 @@ export function RecordTable({ records, onDelete, onSave }: RecordTableProps) {
             </div>
           )
         })}
+      </div>
+
+      {/* 分页 */}
+      <div className="flex items-center justify-between px-4 py-2.5 border-t border-gray-100 text-sm text-gray-500">
+        <span>共 {total} 条</span>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => onPageChange(page - 1)}
+            disabled={page <= 1}
+            className="px-3 py-1 rounded border border-gray-200 disabled:opacity-30 hover:bg-gray-50 text-xs"
+          >
+            上一页
+          </button>
+          <span className="text-xs tabular-nums">
+            {page} / {totalPages}
+          </span>
+          <button
+            onClick={() => onPageChange(page + 1)}
+            disabled={page >= totalPages}
+            className="px-3 py-1 rounded border border-gray-200 disabled:opacity-30 hover:bg-gray-50 text-xs"
+          >
+            下一页
+          </button>
+        </div>
       </div>
     </div>
   )

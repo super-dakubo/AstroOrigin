@@ -52,5 +52,19 @@ pub fn init_pool(db_path: &str) -> Result<DbPool> {
     )
     .context("Failed to run database migrations")?;
 
+    // Migration: 新增列（兼容旧数据库）
+    for col in &["item_type", "banner_type"] {
+        let has = conn
+            .prepare(&format!("SELECT {} FROM gacha_records LIMIT 0", col))
+            .is_ok();
+        if !has {
+            conn.execute_batch(&format!(
+                "ALTER TABLE gacha_records ADD COLUMN {} TEXT NOT NULL DEFAULT '';",
+                col
+            ))
+            .with_context(|| format!("Failed to add {} column", col))?;
+        }
+    }
+
     Ok(pool)
 }
