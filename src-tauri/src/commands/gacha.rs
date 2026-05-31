@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use crate::db::DbPool;
 use crate::error::TauriResult;
 use anyhow::Context;
+use image::GenericImageView;
 use std::sync::OnceLock;
 
 /// 全局 AppHandle，用于在 spawn_blocking 内发进度事件
@@ -47,9 +48,18 @@ pub struct GachaRecord {
     pub id: i64,
     pub game_kind: String,
     pub item_name: String,
+    pub item_type: String,
     pub star_rating: i32,
     pub record_date: String,
     pub is_won: bool,
+    pub banner_type: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GachaRecordsResponse {
+    pub records: Vec<GachaRecord>,
+    pub total: i64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -73,36 +83,101 @@ pub struct GachaImportResult {
 pub async fn get_gacha_records(
     pool: tauri::State<'_, DbPool>,
     game_kind: String,
-    limit: Option<i64>,
-) -> TauriResult<Vec<GachaRecord>> {
-    let limit = limit.unwrap_or(100);
+    page: Option<i64>,
+    page_size: Option<i64>,
+    banner: Option<String>,
+    star_filter: Option<i32>,
+    sort_by: Option<String>,
+    sort_order: Option<String>,
+) -> TauriResult<GachaRecordsResponse> {
+    let p = page.unwrap_or(1).max(1);
+    let ps = page_size.unwrap_or(20).clamp(1, 200);
+    let offset = (p - 1) * ps;
     let pool = pool.inner().clone();
 
     tokio::task::spawn_blocking(move || {
         let conn = pool.get().context("Failed to get DB connection")?;
-        let mut stmt = conn.prepare(
-            "SELECT id, game_kind, item_name, star_rating, record_date, is_won
-             FROM gacha_records
-             WHERE game_kind = ?
-             ORDER BY record_date DESC, id DESC
-             LIMIT ?",
+
+        // Build dynamic WHERE clause
+        let mut conditions = vec!["game_kind = ?1".to_string()];
+        let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+        param_values.push(Box::new(game_kind.clone()));
+
+        if let Some(ref b) = banner {
+            if !b.is_empty() && b != "全部" {
+                let idx = param_values.len() + 1;
+                conditions.push(format!("banner_type LIKE ?{}", idx));
+                param_values.push(Box::new(format!("%{}%", b)));
+            }
+        }
+        if let Some(sf) = star_filter {
+            if sf > 0 {
+                let idx = param_values.len() + 1;
+                conditions.push(format!("star_rating = ?{}", idx));
+                param_values.push(Box::new(sf));
+            }
+        }
+
+        let where_clause = conditions.join(" AND ");
+
+        // Build dynamic ORDER BY
+        let order_clause = match (sort_by.as_deref(), sort_order.as_deref()) {
+            (Some("date"), Some("asc")) => "record_date ASC, id ASC".to_string(),
+            (Some("star"), Some("asc")) => "star_rating ASC, record_date DESC".to_string(),
+            (Some("star"), _) => "star_rating DESC, record_date DESC".to_string(),
+            _ => "record_date DESC, id DESC".to_string(),
+        };
+
+        // COUNT query
+        let count_sql = format!(
+            "SELECT COUNT(*) FROM gacha_records WHERE {}",
+            where_clause
+        );
+        let total: i64 = conn.query_row(
+            &count_sql,
+            rusqlite::params_from_iter(param_values.iter().map(|p| p.as_ref())),
+            |row| row.get(0),
         )?;
 
+        // SELECT query — add LIMIT and OFFSET params
+        let num_where_params = param_values.len();
+        param_values.push(Box::new(ps));
+        param_values.push(Box::new(offset));
+
+        let limit_idx = num_where_params + 1;
+        let offset_idx = num_where_params + 2;
+
+        let select_sql = format!(
+            "SELECT id, game_kind, item_name, item_type, star_rating, record_date, is_won, banner_type
+             FROM gacha_records
+             WHERE {}
+             ORDER BY {}
+             LIMIT ?{} OFFSET ?{}",
+            where_clause, order_clause, limit_idx, offset_idx,
+        );
+
+        let mut stmt = conn.prepare(&select_sql)?;
+
         let records = stmt
-            .query_map(rusqlite::params![game_kind, limit], |row| {
-                Ok(GachaRecord {
-                    id: row.get(0)?,
-                    game_kind: row.get(1)?,
-                    item_name: row.get(2)?,
-                    star_rating: row.get(3)?,
-                    record_date: row.get(4)?,
-                    is_won: row.get(5)?,
-                })
-            })?
+            .query_map(
+                rusqlite::params_from_iter(param_values.iter().map(|p| p.as_ref())),
+                |row| {
+                    Ok(GachaRecord {
+                        id: row.get(0)?,
+                        game_kind: row.get(1)?,
+                        item_name: row.get(2)?,
+                        item_type: row.get(3)?,
+                        star_rating: row.get(4)?,
+                        record_date: row.get(5)?,
+                        is_won: row.get(6)?,
+                        banner_type: row.get(7)?,
+                    })
+                },
+            )?
             .collect::<Result<Vec<_>, _>>()
             .context("Failed to collect records")?;
 
-        Ok(records)
+        Ok(GachaRecordsResponse { records, total })
     })
     .await
     .map_err(|e| format!("Task join error: {}", e))?
@@ -214,6 +289,10 @@ fn process_one_screenshot(
             i, w.text, w.x, w.y, w.width, w.height);
     }
 
+    // 加载图片用于颜色星级检测
+    let img = image::load_from_memory(img_bytes)
+        .map_err(|e| format!("Image decode failed: {}", e))?;
+
     // ── 阶段 2: 文字识别完成 ──
     emit_phase(file_idx, file_total, "recognize", None);
 
@@ -289,7 +368,8 @@ fn process_one_screenshot(
     }
 
     // ── 4. 对表头下所有行，用表头列区间判断每个字属于哪列 ──
-    let mut data_rows: Vec<[String; 4]> = Vec::new();
+    // 每个元素：(合并后4列文本, 颜色星级)
+    let mut data_rows: Vec<([String; 4], Option<i32>)> = Vec::new();
     let mut found_header = false;
 
     for ry in &row_centers {
@@ -304,6 +384,9 @@ fn process_one_screenshot(
         if rw.len() <= 2 { continue; }
 
         let mut cells: [Vec<String>; 4] = Default::default();
+        // 保留列1（对象名称）的 OCR 词对象，用于采样文字颜色
+        let mut col1_words: Vec<&crate::ocr::OcrWord> = Vec::new();
+
         for w in &rw {
             let cx = w.x + w.width / 2.0;
             let mut ci: Option<usize> = None;
@@ -323,12 +406,17 @@ fn process_one_screenshot(
                     .unwrap_or(3)
             });
             cells[ci].push(w.text.trim().to_string());
+            if ci == 1 { col1_words.push(w); }
         }
+
+        // 采样对象名称文字颜色 → 星级
+        let color_rating = star_rating_from_text(&img, &col1_words);
+
         let merged: [String; 4] = [
             cells[0].join(""), cells[1].join(""),
             cells[2].join(""), cells[3].join(""),
         ];
-        data_rows.push(merged);
+        data_rows.push((merged, color_rating));
         if data_rows.len() >= 5 { break; }
     }
     eprintln!("[WARP] {} data rows", data_rows.len());
@@ -336,11 +424,10 @@ fn process_one_screenshot(
     // ── 阶段 4: 入库 ──
     emit_phase(file_idx, file_total, "save", None);
 
-    // ── 5. 去重入库 ──
+    // ── 5. 入库（重复则更新星级）──
     let mut imported = 0usize;
-    let mut duplicates = 0usize;
 
-    for cells in &data_rows {
+    for (cells, color_rating) in &data_rows {
         let c: [&str; 4] = [
             cells[0].trim(), cells[1].trim(),
             cells[2].trim(), cells[3].trim(),
@@ -348,27 +435,31 @@ fn process_one_screenshot(
 
         let obj_type = c[0];
         let item_name = fuzzy_match_name(c[1]);
+        let banner_type = c[2];
         let record_date = normalize_date(c[3]);
 
-        let star_rating = if obj_type == "角色" { 4 } else { 3 };
+        // 优先级：文字颜色 > 已知物品名 > 类型启发式
+        let star_rating = (*color_rating)
+            .or_else(|| known_star_rating(&item_name))
+            .unwrap_or_else(|| if obj_type == "角色" { 4 } else { 3 });
 
         if !item_name.is_empty() && !record_date.is_empty() {
-            let changed = conn.execute(
-                "INSERT OR IGNORE INTO gacha_records (game_kind, item_name, star_rating, record_date, is_won)
-                 VALUES (?, ?, ?, ?, ?)",
-                rusqlite::params![game_kind, &item_name, star_rating, &record_date, star_rating < 5],
+            conn.execute(
+                "INSERT INTO gacha_records (game_kind, item_name, item_type, star_rating, record_date, is_won, banner_type)
+                 VALUES (?, ?, ?, ?, ?, ?, ?)
+                 ON CONFLICT(game_kind, item_name, record_date) DO UPDATE SET
+                   item_type = excluded.item_type,
+                   star_rating = excluded.star_rating,
+                   is_won = excluded.is_won,
+                   banner_type = excluded.banner_type",
+                rusqlite::params![game_kind, &item_name, obj_type, star_rating, &record_date, star_rating < 5, banner_type],
             ).map_err(|e| format!("Insert error: {}", e))?;
-            if changed > 0 {
-                imported += 1;
-                eprintln!("[IMPORT]   Imported: '{}' ({}★, {} | {})", item_name, star_rating, obj_type, record_date);
-            } else {
-                duplicates += 1;
-                eprintln!("[IMPORT]   Duplicate skipped: '{}' | {}", item_name, record_date);
-            }
+            imported += 1;
+            eprintln!("[IMPORT]   '{}' ({}★, {} | {})", item_name, star_rating, obj_type, record_date);
         }
     }
 
-    Ok(GachaImportResult { imported, duplicates })
+    Ok(GachaImportResult { imported, duplicates: 0 })
 }
 
 #[tauri::command]
@@ -432,16 +523,18 @@ pub async fn update_gacha_record(
     pool: tauri::State<'_, DbPool>,
     id: i64,
     item_name: String,
+    item_type: String,
     star_rating: i32,
     record_date: String,
     is_won: bool,
+    banner_type: String,
 ) -> TauriResult<bool> {
     let pool = pool.inner().clone();
     tokio::task::spawn_blocking(move || {
         let conn = pool.get().map_err(|e| format!("DB error: {}", e))?;
         let result = conn.execute(
-            "UPDATE gacha_records SET item_name = ?, star_rating = ?, record_date = ?, is_won = ? WHERE id = ?",
-            rusqlite::params![item_name, star_rating, record_date, is_won, id],
+            "UPDATE gacha_records SET item_name = ?, item_type = ?, star_rating = ?, record_date = ?, is_won = ?, banner_type = ? WHERE id = ?",
+            rusqlite::params![item_name, item_type, star_rating, record_date, is_won, banner_type, id],
         );
         match result {
             Ok(_) => Ok(true),
@@ -521,6 +614,93 @@ fn fuzzy_match_name(ocr: &str) -> String {
         }
     }
     best
+}
+
+/// 从对象名称的文字颜色判断星级
+/// 崩铁抽卡记录：5★橙/金、4★紫、3★黑
+fn star_rating_from_text(img: &image::DynamicImage, col1_words: &[&crate::ocr::OcrWord]) -> Option<i32> {
+    if col1_words.is_empty() {
+        return None;
+    }
+    let (w, h) = img.dimensions();
+
+    // 在整个词框区域内均匀采样，找最有色彩的像素
+    // 中文词框中心可能有空心区域，需要扩大覆盖
+    let mut best_r = 0u32;
+    let mut best_g = 0u32;
+    let mut best_b = 0u32;
+    let mut best_sat = 0u32; // 饱和度 = max(R,G,B) - min(R,G,B)
+    let mut sampled = 0u32;
+
+    for word in col1_words {
+        let x0 = word.x.max(0.0) as u32;
+        let y0 = word.y.max(0.0) as u32;
+        let x1 = ((word.x + word.width).min((w - 1) as f64).max(0.0)) as u32;
+        let y1 = ((word.y + word.height).min((h - 1) as f64).max(0.0)) as u32;
+
+        // 以 6px 步长遍历整个词框
+        let mut yy = y0;
+        while yy <= y1 {
+            let mut xx = x0;
+            while xx <= x1 {
+                let p = img.get_pixel(xx, yy);
+                let r = p[0] as u32;
+                let g = p[1] as u32;
+                let b = p[2] as u32;
+                let mx = r.max(g).max(b);
+                let mn = r.min(g).min(b);
+                let sat = mx - mn;
+                if sat > best_sat {
+                    best_sat = sat;
+                    best_r = r;
+                    best_g = g;
+                    best_b = b;
+                }
+                sampled += 1;
+                xx += 6;
+            }
+            yy += 6;
+        }
+    }
+
+    eprintln!("[COLOR] name text: RGB({},{},{}) sat={} ({} samples)", best_r, best_g, best_b, best_sat, sampled);
+
+    // 彩色文字（高饱和度）才按颜色判断
+    if best_sat > 40 {
+        // 5★ 橙/金色: R 主导
+        if best_r > best_b + 40 && best_r > 160 {
+            return Some(5);
+        }
+        // 4★ 紫色: B 主导
+        if best_b > best_r && best_b > 120 && best_r > 60 {
+            return Some(4);
+        }
+    }
+
+    // 3★ 黑色文字：低饱和度，RGB 均低
+    // 用亮度区分黑色文字 vs 误采到浅色背景
+    let brightness = best_r + best_g + best_b;
+    if brightness < 300 {
+        return Some(3);
+    }
+
+    None
+}
+
+/// 已知物品名 → 星级映射（颜色检测失败时回退）
+fn known_star_rating(name: &str) -> Option<i32> {
+    match name {
+        // 5★ 角色
+        "希儿" | "景元" | "刃" | "卡芙卡" | "银狼" | "罗刹"
+        | "布洛妮娅" | "杰帕德" | "克拉拉" | "彦卿" | "白露" | "姬子" | "瓦尔特" => Some(5),
+        // 4★ 角色
+        "素裳" | "三月七" | "丹恒" | "希露瓦" | "黑塔" | "阿兰" | "艾丝妲"
+        | "青雀" | "停云" | "驭空" | "佩拉" | "卢卡" | "米沙" | "雪衣"
+        | "寒鸦" | "加拉赫" | "虎克" | "娜塔莎" | "桑博" | "桂乃芬" => Some(4),
+        // 3★ 光锥
+        "轮契" | "齐颂" | "蕃息" | "嘉果" | "锋镝" | "物穰" | "睿见" => Some(3),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
