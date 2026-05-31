@@ -10,7 +10,7 @@ export const THEMES = {
     text: '#1E3A8A',
     border: '#E8DDD0',
     barGradient: 'linear-gradient(90deg, #FFD700, #60A5FA)',
-    isDark: false,
+    isDark: false
   },
   starrail: {
     name: '星铁',
@@ -23,15 +23,15 @@ export const THEMES = {
     text: '#1E1B4B',
     border: '#E0DCF5',
     barGradient: 'linear-gradient(90deg, #A855F7, #FDE047)',
-    isDark: false,
-  },
-} as const;
+    isDark: false
+  }
+} as const
 
-export type GameKind = keyof typeof THEMES;
+export type GameKind = keyof typeof THEMES
 
 export const ROUTES = {
   OVERVIEW: '/',
   GACHA: '/gacha',
   PLAYTIME: '/playtime',
-  SCREENSHOTS: '/screenshots',
-} as const;
+  SCREENSHOTS: '/screenshots' // trailing comma
+} as const

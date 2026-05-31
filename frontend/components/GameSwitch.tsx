@@ -1,13 +1,13 @@
-import { useGameStore } from '../stores/gameStore';
-import type { GameKind } from '../lib/constants';
+import { useGameStore } from '../stores/gameStore'
+import type { GameKind } from '../lib/constants'
 
 const games: { key: GameKind; label: string }[] = [
   { key: 'genshin', label: '原神' },
   { key: 'starrail', label: '星铁' },
-];
+]
 
 export function GameSwitch() {
-  const { currentGame, setGame } = useGameStore();
+  const { currentGame, setGame } = useGameStore()
 
   return (
     <div className="inline-flex bg-gray-100 rounded-lg p-0.5">
@@ -25,5 +25,5 @@ export function GameSwitch() {
         </button>
       ))}
     </div>
-  );
+  )
 }

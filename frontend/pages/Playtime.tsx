@@ -1,7 +1,7 @@
-import { useGameStore } from '../stores/gameStore';
+import { useGameStore } from '../stores/gameStore'
 
 export function Playtime() {
-  const currentGame = useGameStore((s) => s.currentGame);
+  const currentGame = useGameStore((s) => s.currentGame)
 
   return (
     <div className="space-y-6">
@@ -17,5 +17,5 @@ export function Playtime() {
         游戏时长统计将在后续版本中实现
       </div>
     </div>
-  );
+  )
 }

@@ -1,37 +1,40 @@
-import { useState, useRef, useEffect } from 'react';
-import { Pencil } from 'lucide-react';
+import { useState, useRef, useEffect } from 'react'
+import { Pencil } from 'lucide-react'
 
 interface GachaRecord {
-  id: number;
-  gameKind: string;
-  itemName: string;
-  starRating: number;
-  recordDate: string;
-  isWon: boolean;
+  id: number
+  gameKind: string
+  itemName: string
+  starRating: number
+  recordDate: string
+  isWon: boolean
 }
 
 interface RecordTableProps {
-  records: GachaRecord[];
-  onDelete?: (id: number) => void;
-  onSave?: (id: number, data: { itemName: string; starRating: number; recordDate: string; isWon: boolean }) => void;
-  knownNames?: string[];
+  records: GachaRecord[]
+  onDelete?: (id: number) => void
+  onSave?: (
+    id: number,
+    data: { itemName: string; starRating: number; recordDate: string; isWon: boolean }
+  ) => void
+  knownNames?: string[]
 }
 
 type EditState = {
-  id: number;
-  itemName: string;
-  starRating: number;
-  recordDate: string;
-  isWon: boolean;
-} | null;
+  id: number
+  itemName: string
+  starRating: number
+  recordDate: string
+  isWon: boolean
+} | null
 
 export function RecordTable({ records, onDelete, onSave }: RecordTableProps) {
-  const [editing, setEditing] = useState<EditState>(null);
-  const nameRef = useRef<HTMLInputElement>(null);
+  const [editing, setEditing] = useState<EditState>(null)
+  const nameRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
-    if (editing) nameRef.current?.focus();
-  }, [editing]);
+    if (editing) nameRef.current?.focus()
+  }, [editing])
 
   const startEdit = (r: GachaRecord) => {
     setEditing({
@@ -39,29 +42,29 @@ export function RecordTable({ records, onDelete, onSave }: RecordTableProps) {
       itemName: r.itemName,
       starRating: r.starRating,
       recordDate: r.recordDate,
-      isWon: r.isWon,
-    });
-  };
+      isWon: r.isWon
+    })
+  }
 
-  const cancelEdit = () => setEditing(null);
+  const cancelEdit = () => setEditing(null)
 
   const saveEdit = () => {
-    if (!editing) return;
+    if (!editing) return
     onSave?.(editing.id, {
       itemName: editing.itemName,
       starRating: editing.starRating,
       recordDate: editing.recordDate,
-      isWon: editing.isWon,
-    });
-    setEditing(null);
-  };
+      isWon: editing.isWon
+    })
+    setEditing(null)
+  }
 
   if (records.length === 0) {
     return (
       <div className="bg-white rounded-xl border border-gray-200 p-8 text-center text-gray-400">
         暂无记录
       </div>
-    );
+    )
   }
 
   return (
@@ -75,7 +78,7 @@ export function RecordTable({ records, onDelete, onSave }: RecordTableProps) {
       </div>
       <div className="divide-y divide-gray-100">
         {records.map((r) => {
-          const isEditing = editing?.id === r.id;
+          const isEditing = editing?.id === r.id
 
           if (isEditing) {
             return (
@@ -87,20 +90,28 @@ export function RecordTable({ records, onDelete, onSave }: RecordTableProps) {
                   className="w-full px-2 py-1 border border-blue-300 rounded text-sm"
                   value={editing.recordDate}
                   onChange={(e) => setEditing({ ...editing, recordDate: e.target.value })}
-                  onKeyDown={(e) => e.key === 'Enter' ? saveEdit() : e.key === 'Escape' ? cancelEdit() : undefined}
+                  onKeyDown={(e) =>
+                    e.key === 'Enter' ? saveEdit() : e.key === 'Escape' ? cancelEdit() : undefined
+                  }
                 />
                 <input
                   ref={nameRef}
                   className="w-full px-2 py-1 border border-blue-300 rounded text-sm"
                   value={editing.itemName}
                   onChange={(e) => setEditing({ ...editing, itemName: e.target.value })}
-                  onKeyDown={(e) => e.key === 'Enter' ? saveEdit() : e.key === 'Escape' ? cancelEdit() : undefined}
+                  onKeyDown={(e) =>
+                    e.key === 'Enter' ? saveEdit() : e.key === 'Escape' ? cancelEdit() : undefined
+                  }
                 />
                 <input
                   className="w-16 px-2 py-1 border border-blue-300 rounded text-sm text-center"
                   value={editing.starRating}
-                  onChange={(e) => setEditing({ ...editing, starRating: parseInt(e.target.value) || 0 })}
-                  onKeyDown={(e) => e.key === 'Enter' ? saveEdit() : e.key === 'Escape' ? cancelEdit() : undefined}
+                  onChange={(e) =>
+                    setEditing({ ...editing, starRating: parseInt(e.target.value) || 0 })
+                  }
+                  onKeyDown={(e) =>
+                    e.key === 'Enter' ? saveEdit() : e.key === 'Escape' ? cancelEdit() : undefined
+                  }
                 />
                 <label className="flex items-center gap-1 text-xs cursor-pointer">
                   <input
@@ -111,11 +122,23 @@ export function RecordTable({ records, onDelete, onSave }: RecordTableProps) {
                   {editing.isWon ? '欧' : '歪'}
                 </label>
                 <div className="flex gap-1">
-                  <button onClick={saveEdit} className="text-green-600 hover:text-green-700 text-xs font-bold" title="保存">✓</button>
-                  <button onClick={cancelEdit} className="text-gray-400 hover:text-gray-600 text-xs" title="取消">✕</button>
+                  <button
+                    onClick={saveEdit}
+                    className="text-green-600 hover:text-green-700 text-xs font-bold"
+                    title="保存"
+                  >
+                    ✓
+                  </button>
+                  <button
+                    onClick={cancelEdit}
+                    className="text-gray-400 hover:text-gray-600 text-xs"
+                    title="取消"
+                  >
+                    ✕
+                  </button>
                 </div>
               </div>
-            );
+            )
           }
 
           return (
@@ -126,11 +149,17 @@ export function RecordTable({ records, onDelete, onSave }: RecordTableProps) {
               <span className={`${r.recordDate ? 'text-gray-900' : 'text-gray-300 italic'}`}>
                 {r.recordDate || '未识别'}
               </span>
-              <span className={`font-medium flex items-center gap-1.5 ${
-                r.starRating === 5 ? 'text-amber-500' :
-                r.starRating === 4 ? 'text-purple-500' :
-                r.itemName ? 'text-gray-900' : 'text-gray-300 italic'
-              }`}>
+              <span
+                className={`font-medium flex items-center gap-1.5 ${
+                  r.starRating === 5
+                    ? 'text-amber-500'
+                    : r.starRating === 4
+                      ? 'text-purple-500'
+                      : r.itemName
+                        ? 'text-gray-900'
+                        : 'text-gray-300 italic'
+                }`}
+              >
                 {r.itemName || '未识别'}
                 {r.itemName && (
                   <button
@@ -142,11 +171,17 @@ export function RecordTable({ records, onDelete, onSave }: RecordTableProps) {
                   </button>
                 )}
               </span>
-              <span className={
-                r.starRating === 5 ? 'text-amber-500 font-bold' :
-                r.starRating === 4 ? 'text-purple-500 font-semibold' :
-                r.starRating > 0 ? 'text-gray-400' : 'text-gray-300 italic'
-              }>
+              <span
+                className={
+                  r.starRating === 5
+                    ? 'text-amber-500 font-bold'
+                    : r.starRating === 4
+                      ? 'text-purple-500 font-semibold'
+                      : r.starRating > 0
+                        ? 'text-gray-400'
+                        : 'text-gray-300 italic'
+                }
+              >
                 {r.starRating > 0 ? '★'.repeat(r.starRating) : '?'}
               </span>
               <span>
@@ -165,9 +200,9 @@ export function RecordTable({ records, onDelete, onSave }: RecordTableProps) {
                 ✕
               </button>
             </div>
-          );
+          )
         })}
       </div>
     </div>
-  );
+  )
 }

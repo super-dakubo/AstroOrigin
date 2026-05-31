@@ -1,11 +1,11 @@
-import type { ReactNode } from 'react';
+import type { ReactNode } from 'react'
 
 interface StatCardProps {
-  label: string;
-  value: string | number;
-  sub?: string;
-  subColor?: string;
-  prefix?: ReactNode;
+  label: string
+  value: string | number
+  sub?: string
+  subColor?: string
+  prefix?: ReactNode
 }
 
 export function StatCard({ label, value, sub, subColor, prefix }: StatCardProps) {
@@ -22,5 +22,5 @@ export function StatCard({ label, value, sub, subColor, prefix }: StatCardProps)
         </div>
       )}
     </div>
-  );
+  )
 }

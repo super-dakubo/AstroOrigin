@@ -1,13 +1,13 @@
-import { useECharts } from '../hooks/useECharts';
-import { useGameStore } from '../stores/gameStore';
-import * as echarts from 'echarts';
+import { useECharts } from '../hooks/useECharts'
+import { useGameStore } from '../stores/gameStore'
+import * as echarts from 'echarts'
 
 interface LuckChartProps {
-  records: Array<{ pulls: number; isFiveStar: boolean; isWon?: boolean }>;
+  records: Array<{ pulls: number; isFiveStar: boolean; isWon?: boolean }>
 }
 
 export function LuckChart({ records }: LuckChartProps) {
-  const theme = useGameStore((s) => s.theme);
+  const theme = useGameStore((s) => s.theme)
 
   const option: echarts.EChartsOption = {
     tooltip: { trigger: 'item' },
@@ -15,13 +15,13 @@ export function LuckChart({ records }: LuckChartProps) {
     xAxis: {
       type: 'category',
       data: records.map((_, i) => i + 1),
-      axisLabel: { fontSize: 10, color: '#9ca3af' },
+      axisLabel: { fontSize: 10, color: '#9ca3af' }
     },
     yAxis: {
       type: 'value',
       name: '抽数间隔',
       nameTextStyle: { fontSize: 10, color: '#9ca3af' },
-      axisLabel: { fontSize: 10, color: '#9ca3af' },
+      axisLabel: { fontSize: 10, color: '#9ca3af' }
     },
     series: [
       {
@@ -29,19 +29,15 @@ export function LuckChart({ records }: LuckChartProps) {
         data: records.map((r) => ({
           value: r.pulls,
           itemStyle: {
-            color: r.isFiveStar
-              ? r.isWon === false
-                ? '#D4433B'
-                : theme.gold
-              : '#e5e7eb',
-          },
+            color: r.isFiveStar ? (r.isWon === false ? '#D4433B' : theme.gold) : '#e5e7eb'
+          }
         })),
-        barMaxWidth: 20,
-      },
-    ],
-  };
+        barMaxWidth: 20
+      }
+    ]
+  }
 
-  const chartRef = useECharts(option);
+  const chartRef = useECharts(option)
 
   return (
     <div className="bg-white rounded-xl border border-gray-200 p-4">
@@ -53,5 +49,5 @@ export function LuckChart({ records }: LuckChartProps) {
       </div>
       <div ref={chartRef} className="w-full h-48" />
     </div>
-  );
+  )
 }
