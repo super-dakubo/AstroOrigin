@@ -70,6 +70,18 @@ pub struct GachaStats {
     pub lost_count: i64,
     pub current_pity: i32,
     pub avg_pulls_per_five_star: f64,
+    pub by_banner: Vec<BannerStats>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BannerStats {
+    pub banner_type: String,
+    pub total_pulls: i64,
+    pub five_star_count: i64,
+    pub lost_count: i64,
+    pub current_pity: i32,
+    pub avg_pulls_per_five_star: f64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -90,9 +102,9 @@ pub async fn get_gacha_records(
     sort_by: Option<String>,
     sort_order: Option<String>,
 ) -> TauriResult<GachaRecordsResponse> {
-    let p = page.unwrap_or(1).max(1);
-    let ps = page_size.unwrap_or(20).clamp(1, 200);
-    let offset = (p - 1) * ps;
+    let page_num = page.unwrap_or(1).max(1);
+    let limit = page_size.unwrap_or(20).clamp(1, 200);
+    let offset = (page_num - 1) * limit;
     let pool = pool.inner().clone();
 
     tokio::task::spawn_blocking(move || {
@@ -137,11 +149,12 @@ pub async fn get_gacha_records(
             &count_sql,
             rusqlite::params_from_iter(param_values.iter().map(|p| p.as_ref())),
             |row| row.get(0),
-        )?;
+        ).context("Failed to count gacha records")?;
 
         // SELECT query — add LIMIT and OFFSET params
+        // num_where_params 是 WHERE 条件参数个数，LIMIT/OFFSET 编号在其后
         let num_where_params = param_values.len();
-        param_values.push(Box::new(ps));
+        param_values.push(Box::new(limit));
         param_values.push(Box::new(offset));
 
         let limit_idx = num_where_params + 1;
@@ -240,12 +253,67 @@ pub async fn get_gacha_stats(
             0.0
         };
 
+        // 按 banner_type 分组统计
+        let mut by_banner = Vec::new();
+        let mut banner_stmt = conn.prepare(
+            "SELECT banner_type, COUNT(*), SUM(CASE WHEN star_rating = 5 THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN star_rating = 5 AND is_won = 0 THEN 1 ELSE 0 END)
+             FROM gacha_records
+             WHERE game_kind = ?
+             GROUP BY banner_type
+             ORDER BY banner_type"
+        )?;
+
+        let banner_rows = banner_stmt.query_map(rusqlite::params![game_kind], |row| {
+            let bt: String = row.get(0)?;
+            let total: i64 = row.get(1)?;
+            let five_star: i64 = row.get(2)?;
+            let lost: i64 = row.get(3)?;
+            Ok((bt, total, five_star, lost))
+        })?
+        .collect::<Result<Vec<_>, _>>()
+        .context("Failed to collect banner stats")?;
+
+        for (bt, total, five_star, lost) in &banner_rows {
+            let latest_five_id: Option<i64> = conn.query_row(
+                "SELECT MAX(id) FROM gacha_records WHERE game_kind = ? AND star_rating = 5 AND banner_type = ?",
+                rusqlite::params![game_kind, bt],
+                |row| row.get(0),
+            ).ok();
+
+            let pity: i32 = if let Some(max_id) = latest_five_id {
+                conn.query_row(
+                    "SELECT COUNT(*) FROM gacha_records WHERE game_kind = ? AND id > ? AND banner_type = ?",
+                    rusqlite::params![game_kind, max_id, bt],
+                    |row| row.get(0),
+                )?
+            } else {
+                conn.query_row(
+                    "SELECT COUNT(*) FROM gacha_records WHERE game_kind = ? AND banner_type = ?",
+                    rusqlite::params![game_kind, bt],
+                    |row| row.get(0),
+                )?
+            };
+
+            let avg = if *five_star > 0 { *total as f64 / *five_star as f64 } else { 0.0 };
+
+            by_banner.push(BannerStats {
+                banner_type: bt.clone(),
+                total_pulls: *total,
+                five_star_count: *five_star,
+                lost_count: *lost,
+                current_pity: pity,
+                avg_pulls_per_five_star: avg,
+            });
+        }
+
         Ok(GachaStats {
             total_pulls: total,
             five_star_count: five_star,
             lost_count: lost,
             current_pity,
             avg_pulls_per_five_star: avg_pulls,
+            by_banner,
         })
     })
     .await
