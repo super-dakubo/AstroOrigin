@@ -116,7 +116,7 @@ pub async fn get_gacha_records(
         param_values.push(Box::new(game_kind.clone()));
 
         if let Some(ref b) = banner {
-            if !b.is_empty() && b != "全部" {
+            if !b.is_empty() {
                 let idx = param_values.len() + 1;
                 conditions.push(format!("banner_type LIKE ?{}", idx));
                 param_values.push(Box::new(format!("%{}%", b)));
@@ -520,7 +520,7 @@ fn process_one_screenshot(
                    star_rating = excluded.star_rating,
                    is_won = excluded.is_won,
                    banner_type = excluded.banner_type",
-                rusqlite::params![game_kind, &item_name, obj_type, star_rating, &record_date, star_rating < 5, banner_type],
+                rusqlite::params![game_kind, &item_name, obj_type, star_rating, &record_date, true, banner_type],
             ).map_err(|e| format!("Insert error: {}", e))?;
             imported += 1;
             eprintln!("[IMPORT]   '{}' ({}★, {} | {})", item_name, star_rating, obj_type, record_date);

@@ -5,6 +5,7 @@ mod game;
 mod ocr;
 mod paddle;
 
+use anyhow::Context;
 use db::init_pool;
 use tauri::Manager;
 
@@ -17,16 +18,21 @@ pub fn run() {
             let app_dir = app
                 .path()
                 .app_data_dir()
-                .expect("Failed to get app data dir");
-            std::fs::create_dir_all(&app_dir).expect("Failed to create app data dir");
+                .context("Failed to get app data dir")?;
+            std::fs::create_dir_all(&app_dir).context("Failed to create app data dir")?;
             let db_path = app_dir.join("companion.db");
-            let pool = init_pool(db_path.to_str().unwrap())
-                .expect("Failed to initialize database");
+            let pool = init_pool(
+                db_path
+                    .to_str()
+                    .context("Database path contains invalid UTF-8")?,
+            )
+            .context("Failed to initialize database")?;
 
             app.manage(pool);
             commands::gacha::init_app_handle(app.handle().clone());
             Ok(())
         })
+
         .invoke_handler(tauri::generate_handler![
             commands::gacha::get_gacha_records,
             commands::gacha::get_gacha_stats,

@@ -6,9 +6,12 @@ use std::sync::{Mutex, OnceLock};
 /// 此包装器用 `Mutex` 保证单线程访问，并标记为 Send/Sync 以允许静态存储。
 struct SafeOcrEngine(Mutex<OcrEngine>);
 
-// Safety: OcrEngine is only accessed through the Mutex, guaranteeing
-// mutual exclusion. The inner RefCell-backed cache in tract is never
-// accessed concurrently.
+// Safety: SafeOcrEngine is Send + Sync because:
+// 1. All access to OcrEngine goes through Mutex — only one thread at a time.
+// 2. OcrEngine::run_from_image(&self) takes &self, meaning no mutation (only interior mutability).
+// 3. Mutex ensures the inner RefCell-backed cache in tract is never accessed concurrently.
+// 4. pure_onnx_ocr does not use thread-local storage or process-global state outside
+//    the exposed API — model inference is self-contained per call.
 unsafe impl Send for SafeOcrEngine {}
 unsafe impl Sync for SafeOcrEngine {}
 
@@ -41,7 +44,10 @@ impl PaddleOcrEngine {
         let engine = safe_engine
             .0
             .lock()
-            .map_err(|_| anyhow::anyhow!("OCR engine lock poisoned"))?;
+            .unwrap_or_else(|e| {
+                eprintln!("[WARN] OCR engine lock was poisoned, recovering");
+                e.into_inner()
+            });
         let img = image::load_from_memory(image_data)?;
         let results = engine.run_from_image(&img)?;
 

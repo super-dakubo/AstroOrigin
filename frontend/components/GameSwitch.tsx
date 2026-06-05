@@ -3,7 +3,7 @@ import type { GameKind } from '../lib/constants'
 
 const games: { key: GameKind; label: string }[] = [
   { key: 'genshin', label: '原神' },
-  { key: 'starrail', label: '星铁' },
+  { key: 'starrail', label: '星铁' }
 ]
 
 export function GameSwitch() {
@@ -15,7 +15,7 @@ export function GameSwitch() {
         <button
           key={g.key}
           onClick={() => setGame(g.key)}
-          className={`px-4 py-1.5 text-sm rounded-md transition-all ${
+          className={`px-4 py-1.5 text-sm rounded-md transition-colors ${
             currentGame === g.key
               ? 'bg-white shadow-sm font-medium text-gray-900'
               : 'text-gray-500 hover:text-gray-700'

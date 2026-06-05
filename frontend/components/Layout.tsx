@@ -1,4 +1,4 @@
-import React from 'react'
+import { useEffect, type ReactNode } from 'react'
 import { NavLink } from 'react-router-dom'
 import { ROUTES } from '../lib/constants'
 import { GameSwitch } from './GameSwitch'
@@ -11,18 +11,21 @@ const navItems = [
   { path: ROUTES.SCREENSHOTS, label: '截图' }
 ]
 
-export function Layout({ children }: { children: React.ReactNode }) {
+export function Layout({ children }: { children: ReactNode }) {
   const theme = useGameStore((s) => s.theme)
 
   // Ensure dark class is always removed (both themes are light)
-  React.useEffect(() => {
+  useEffect(() => {
     document.documentElement.classList.remove('dark')
   }, [])
 
   const barStyle = { background: theme.barGradient }
 
   return (
-    <div className="min-h-screen flex flex-col" style={{ background: theme.bg }}>
+    <div
+      className="min-h-screen flex flex-col transition-colors duration-300"
+      style={{ background: theme.bg }}
+    >
       {/* Top accent bar */}
       <div className="h-0.5" style={barStyle} />
 

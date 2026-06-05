@@ -84,3 +84,28 @@ React Component → useTauriQuery (react-query) → invoke → Tauri Command
 5. tauri.conf.json 是否未开启 shell.open 或其他危险权限？
 6. 是否擅自升降了 package.json / Cargo.toml 主版本号？
 7. `postcss.config` 是否需要 `.cjs` 后缀？（项目 `type: module`）
+
+## 可持续优化规范
+
+> 以下规范来自全栈健康检查的经验教训，配合记忆系统中的经验教训一起使用。
+
+### 前端
+
+- **图表生命周期**：`useECharts` 必须拆为两个 effect — `[]` 初始化（`init` + `resize`），`[option]` 只调 `setOption`，绝不 `dispose`+`reinit` 循环
+- **Loading / Error / Empty 三态**：每个 `useTauriQuery` 必须消费 `isLoading`、`isError`、`data`。加载中显示骨架屏，错误显示提示，空数据显示占位文案。`'--'` 仅用于数据加载完成后的空值
+- **语义化表格**：数据表格必须用 `<table>` + `<thead>`/`<tbody>`/`<tr>`/`<th>`/`<td>`，不用 CSS Grid 模拟表格（WCAG 1.3.1）
+- **WCAG 对比度**：彩色背景上的文字必须通过 WCAG AA（普通文本 4.5:1，大文本 3:1）。金色/浅色背景上用深色字
+- **表单可访问性**：每个 `<select>`/`<input>` 必须有对应的 `<label htmlFor="...">`，id 唯一
+- **无 alert()**：用户提示用内联 toast（参考 Gacha 页面的错误提示模式），不用 `window.alert()`
+- **共享类型**：跨组件复用的接口定义在 `lib/types.ts`，不重复声明
+- **useMemo 防重算**：组件内派生数据（如 `chartData`）必须用 `useMemo`，避免每次渲染重算
+- **死代码清理**：新增 Zustand store、hook、组件后，如果未被 import 则不应合入主分支
+
+### Rust 后端
+
+- **Mutex 中毒恢复**：`.lock()` 后用 `unwrap_or_else(|e| e.into_inner())` 恢复而非 `map_err` 返回永久错误
+- **连接池超时**：`Pool::builder()` 必须设 `.connection_timeout(Duration::from_secs(30))`，避免连接耗尽时永久阻塞
+- **unsafe Send/Sync 文档化**：实现 `unsafe impl Send/Sync` 时必须逐条列出确切 invariants（互斥保证、无 TLS、无全局可变状态），不能笼统说 "only accessed through Mutex"
+- **无 .expect/.unwrap**：初始化路径和 setup 中用 `.context()?` 传播错误，不允许 `.expect()`/`.unwrap()`（Tauri setup 支持 `Result<(), Box<dyn Error>>`）
+- **参数化查询**：SQL 用命名参数（`:name`）而非位置参数（`?1`, `?2`），防止增删条件时索引错位
+- **前端字符串不泄露到后端**：后端不比较前端显示字符串（如 `"全部"`），由前端通过 `null`/`None` 控制行为

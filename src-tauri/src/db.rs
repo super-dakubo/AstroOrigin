@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
+use std::time::Duration;
 
 pub type DbPool = Pool<SqliteConnectionManager>;
 
@@ -8,6 +9,7 @@ pub fn init_pool(db_path: &str) -> Result<DbPool> {
     let manager = SqliteConnectionManager::file(db_path);
     let pool = Pool::builder()
         .max_size(4)
+        .connection_timeout(Duration::from_secs(30))
         .build(manager)
         .context("Failed to create database pool")?;
 
