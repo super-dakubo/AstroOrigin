@@ -6,6 +6,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 你是《星原手记》（AstroOrigin）的开发助手。这是一个 Windows 11 桌面应用，服务于《原神》和《崩坏：星穹铁道》玩家，围绕截图 OCR 解析、抽卡战绩、游戏时长统计构建个人游戏生涯管理。
 
+### 项目定位
+
+这是一个**单人个人小工具**，不是企业级产品。所有决策遵循以下优先级：
+
+1. **功能可用** > 代码完美。能跑起来最重要。
+2. **本人（用户）看得懂** > 通用最佳实践。只有一个人维护。
+3. **改动时间** > 通用可扩展性。30 分钟搞不定的建议不做。
+4. **不影响当前功能** > 重构。没坏就别修。
+
+避坑原则：只改有明显 bug 或阻塞功能的。性能瓶颈先测量再决定。代码结构问题如果运行正常就保持。
+
 ---
 
 ## 技术栈
@@ -85,27 +96,12 @@ React Component → useTauriQuery (react-query) → invoke → Tauri Command
 6. 是否擅自升降了 package.json / Cargo.toml 主版本号？
 7. `postcss.config` 是否需要 `.cjs` 后缀？（项目 `type: module`）
 
-## 可持续优化规范
+## 踩坑教训（记下来防止再犯）
 
-> 以下规范来自全栈健康检查的经验教训，配合记忆系统中的经验教训一起使用。
-
-### 前端
-
-- **图表生命周期**：`useECharts` 必须拆为两个 effect — `[]` 初始化（`init` + `resize`），`[option]` 只调 `setOption`，绝不 `dispose`+`reinit` 循环
-- **Loading / Error / Empty 三态**：每个 `useTauriQuery` 必须消费 `isLoading`、`isError`、`data`。加载中显示骨架屏，错误显示提示，空数据显示占位文案。`'--'` 仅用于数据加载完成后的空值
-- **语义化表格**：数据表格必须用 `<table>` + `<thead>`/`<tbody>`/`<tr>`/`<th>`/`<td>`，不用 CSS Grid 模拟表格（WCAG 1.3.1）
-- **WCAG 对比度**：彩色背景上的文字必须通过 WCAG AA（普通文本 4.5:1，大文本 3:1）。金色/浅色背景上用深色字
-- **表单可访问性**：每个 `<select>`/`<input>` 必须有对应的 `<label htmlFor="...">`，id 唯一
-- **无 alert()**：用户提示用内联 toast（参考 Gacha 页面的错误提示模式），不用 `window.alert()`
-- **共享类型**：跨组件复用的接口定义在 `lib/types.ts`，不重复声明
-- **useMemo 防重算**：组件内派生数据（如 `chartData`）必须用 `useMemo`，避免每次渲染重算
-- **死代码清理**：新增 Zustand store、hook、组件后，如果未被 import 则不应合入主分支
-
-### Rust 后端
-
-- **Mutex 中毒恢复**：`.lock()` 后用 `unwrap_or_else(|e| e.into_inner())` 恢复而非 `map_err` 返回永久错误
-- **连接池超时**：`Pool::builder()` 必须设 `.connection_timeout(Duration::from_secs(30))`，避免连接耗尽时永久阻塞
-- **unsafe Send/Sync 文档化**：实现 `unsafe impl Send/Sync` 时必须逐条列出确切 invariants（互斥保证、无 TLS、无全局可变状态），不能笼统说 "only accessed through Mutex"
-- **无 .expect/.unwrap**：初始化路径和 setup 中用 `.context()?` 传播错误，不允许 `.expect()`/`.unwrap()`（Tauri setup 支持 `Result<(), Box<dyn Error>>`）
-- **参数化查询**：SQL 用命名参数（`:name`）而非位置参数（`?1`, `?2`），防止增删条件时索引错位
-- **前端字符串不泄露到后端**：后端不比较前端显示字符串（如 `"全部"`），由前端通过 `null`/`None` 控制行为
+- **useECharts** — 不要 `dispose`+`reinit` 循环，拆两个 effect：init 一次、setOption 更新
+- **Mutex 中毒** — `.lock().unwrap_or_else(\|e\| e.into_inner())` 恢复，不用 `map_err` 永久返回错误
+- **连接池** — `Pool::builder()` 加 `.connection_timeout(30s)`，否则连接耗尽永久挂起
+- **unsafe Send/Sync** — 实现时逐条列 invariants（互斥、无 TLS、无全局状态）
+- **alert()** — 别用，改成 toast
+- **表格** — 用 `<table>` 不要用 CSS Grid 模拟，屏幕阅读器不可用
+- **'--'** — 只在数据加载完成但值为空时显示，不在加载中显示
