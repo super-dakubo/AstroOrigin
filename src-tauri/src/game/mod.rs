@@ -73,3 +73,33 @@ impl GameKind {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_from_str_genshin() {
+        assert_eq!(GameKind::from_str("genshin"), Some(GameKind::Genshin));
+    }
+
+    #[test]
+    fn test_from_str_starrail() {
+        assert_eq!(GameKind::from_str("starrail"), Some(GameKind::StarRail));
+    }
+
+    #[test]
+    fn test_from_str_invalid() {
+        assert_eq!(GameKind::from_str("unknown"), None);
+    }
+
+    #[test]
+    fn test_process_name_genshin() {
+        assert_eq!(GameKind::Genshin.process_name(), "YuanShen.exe");
+    }
+
+    #[test]
+    fn test_process_name_starrail() {
+        assert_eq!(GameKind::StarRail.process_name(), "StarRail.exe");
+    }
+}

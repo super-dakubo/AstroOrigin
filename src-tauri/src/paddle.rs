@@ -1,4 +1,5 @@
 use anyhow::Result;
+use image::DynamicImage;
 use pure_onnx_ocr::OcrEngine;
 use std::sync::{Mutex, OnceLock};
 
@@ -36,8 +37,8 @@ impl PaddleOcrEngine {
         Ok(())
     }
 
-    /// 对图片字节进行 OCR，返回文字及坐标
-    pub fn recognize(image_data: &[u8]) -> Result<Vec<crate::ocr::OcrWord>> {
+    /// 对解码后的图片进行 OCR，返回文字及坐标
+    pub fn recognize(img: &DynamicImage) -> Result<Vec<crate::ocr::OcrWord>> {
         let safe_engine = OCR_ENGINE
             .get()
             .ok_or_else(|| anyhow::anyhow!("OCR engine not initialized"))?;
@@ -48,8 +49,7 @@ impl PaddleOcrEngine {
                 eprintln!("[WARN] OCR engine lock was poisoned, recovering");
                 e.into_inner()
             });
-        let img = image::load_from_memory(image_data)?;
-        let results = engine.run_from_image(&img)?;
+        let results = engine.run_from_image(img)?;
 
         let words = results
             .into_iter()

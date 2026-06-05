@@ -79,9 +79,9 @@ fn ensure_engine_initialized() -> Result<()> {
     result.as_ref().map_err(|e| anyhow::anyhow!("{}", e)).copied()
 }
 
-/// 对图片进行 OCR，提取所有文字及其坐标
+/// 对解码后的图片进行 OCR，提取所有文字及其坐标
 ///
-/// 这是本模块唯一的公开入口。接受任意格式的图片字节（PNG/JPEG/BMP 等），
+/// 这是本模块的公开入口之一。接受已解码的图片（`image::DynamicImage`），
 /// 返回按从上到下、从左到右大致排序的文字块列表。
 ///
 /// 坐标以原始图片尺寸为基准（不做任何内部缩放换算）。
@@ -92,12 +92,10 @@ fn ensure_engine_initialized() -> Result<()> {
 /// # 示例
 ///
 /// ```ignore
-/// let words = ocr_image(&image_data)?;
-/// for w in &words {
-///     println!("{:?} at ({:.0},{:.0})", w.text, w.x, w.y);
-/// }
+/// let img = image::load_from_memory(&image_data)?;
+/// let words = ocr_image(&img)?;
 /// ```
-pub fn ocr_image(image_data: &[u8]) -> Result<Vec<OcrWord>> {
+pub fn ocr_image(img: &image::DynamicImage) -> Result<Vec<OcrWord>> {
     ensure_engine_initialized()?;
-    crate::paddle::PaddleOcrEngine::recognize(image_data)
+    crate::paddle::PaddleOcrEngine::recognize(img)
 }

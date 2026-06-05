@@ -1,6 +1,6 @@
 import { useECharts } from '../hooks/useECharts'
 import { useGameStore } from '../stores/gameStore'
-import * as echarts from 'echarts'
+import type { EChartsOption } from '../lib/echarts'
 
 interface LuckChartProps {
   records: Array<{ pulls: number; isFiveStar: boolean; isWon?: boolean }>
@@ -9,7 +9,7 @@ interface LuckChartProps {
 export function LuckChart({ records }: LuckChartProps) {
   const theme = useGameStore((s) => s.theme)
 
-  const option: echarts.EChartsOption = {
+  const option: EChartsOption = {
     tooltip: { trigger: 'item' },
     grid: { left: 40, right: 16, top: 16, bottom: 24 },
     xAxis: {

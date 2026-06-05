@@ -349,17 +349,18 @@ fn process_one_screenshot(
 ) -> Result<GachaImportResult, String> {
     // ── 阶段 1: 文本检测 ──
     emit_phase(file_idx, file_total, "detect", None);
-    let all_words = crate::ocr::ocr_image(img_bytes)
+
+    // 仅解码一次，OCR 和颜色检测共享
+    let img = image::load_from_memory(img_bytes)
+        .map_err(|e| format!("Image decode failed: {}", e))?;
+
+    let all_words = crate::ocr::ocr_image(&img)
         .map_err(|e| format!("OCR failed: {}", e))?;
     eprintln!("[WARP] {} raw words", all_words.len());
     for (i, w) in all_words.iter().enumerate().take(30) {
         eprintln!("[WARP]   word[{}]: {:?} @ ({:.0},{:.0}) {}x{}",
             i, w.text, w.x, w.y, w.width, w.height);
     }
-
-    // 加载图片用于颜色星级检测
-    let img = image::load_from_memory(img_bytes)
-        .map_err(|e| format!("Image decode failed: {}", e))?;
 
     // ── 阶段 2: 文字识别完成 ──
     emit_phase(file_idx, file_total, "recognize", None);

@@ -1,15 +1,15 @@
 import { useEffect, useRef } from 'react'
-import * as echarts from 'echarts'
+import { init, type ECharts, type EChartsOption } from '../lib/echarts'
 
-export function useECharts(option: echarts.EChartsOption) {
+export function useECharts(option: EChartsOption) {
   const chartRef = useRef<HTMLDivElement>(null)
-  const instanceRef = useRef<echarts.ECharts | null>(null)
+  const instanceRef = useRef<ECharts | null>(null)
 
   // 初始化图表（仅一次），组件卸载时销毁
   useEffect(() => {
     if (!chartRef.current) return
 
-    instanceRef.current = echarts.init(chartRef.current)
+    instanceRef.current = init(chartRef.current)
 
     const handleResize = () => instanceRef.current?.resize()
     window.addEventListener('resize', handleResize)
