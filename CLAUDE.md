@@ -42,7 +42,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 pnpm tauri dev            # 开发模式（Vite HMR + Rust 热重载）
-cargo check -p src-tauri  # Rust 编译检查
+cargo check            # Rust 编译检查
 npx tsc --noEmit          # TypeScript 检查
 pnpm build                # 前端构建
 pnpm tauri build          # 打包成 .msi / .exe
@@ -55,7 +55,7 @@ pnpm add <pkg>            # 加前端依赖
 ```
 frontend/
 ├── pages/         # 路由页面（Overview / Gacha / Playtime / Screenshots）
-├── stores/        # Zustand stores（gameStore / gachaStore）
+├── stores/        # Zustand stores（gameStore）
 ├── hooks/         # 通用 hooks（useTauriQuery / useECharts）
 ├── components/    # 可复用组件（Layout / StatCard / RecordTable / LuckChart / GameSwitch）
 └── lib/           # 常量、类型（THEMES / ROUTES / GameKind）
