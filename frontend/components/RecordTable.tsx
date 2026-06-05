@@ -110,15 +110,24 @@ export function RecordTable({
   return (
     <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
       <table className="w-full">
+        <colgroup>
+          <col style={{ width: '25%' }} />
+          <col style={{ width: '10%' }} />
+          <col style={{ width: '13%' }} />
+          <col style={{ width: '32%' }} />
+          <col style={{ width: '8%' }} />
+          <col style={{ width: '8%' }} />
+          <col style={{ width: '4%' }} />
+        </colgroup>
         <thead>
-          <tr className="grid grid-cols-[1.5fr_0.6fr_0.8fr_2fr_60px_60px_30px] gap-2 px-4 py-2.5 bg-gray-50 text-xs font-medium text-gray-400 items-center">
-            <th>日期</th>
-            <th>种类</th>
-            <th>卡池</th>
-            <th>物品</th>
-            <th>星级</th>
-            <th>结果</th>
-            <th>
+          <tr className="bg-gray-50 text-xs font-medium text-gray-400">
+            <th className="px-4 py-2.5 text-left">日期</th>
+            <th className="px-4 py-2.5 text-left">种类</th>
+            <th className="px-4 py-2.5 text-left">卡池</th>
+            <th className="px-4 py-2.5 text-left">物品</th>
+            <th className="px-4 py-2.5 text-left">星级</th>
+            <th className="px-4 py-2.5 text-left">结果</th>
+            <th className="px-4 py-2.5">
               <span className="sr-only">操作</span>
             </th>
           </tr>
@@ -129,11 +138,8 @@ export function RecordTable({
 
             if (isEditing) {
               return (
-                <tr
-                  key={r.id}
-                  className="grid grid-cols-[1.5fr_0.6fr_0.8fr_2fr_60px_60px_30px] gap-2 px-4 py-2 text-sm items-center bg-blue-50"
-                >
-                  <td>
+                <tr key={r.id} className="bg-blue-50">
+                  <td className="px-4 py-2">
                     <input
                       className="w-full px-2 py-1 border border-blue-300 rounded text-sm"
                       value={editing.recordDate}
@@ -147,7 +153,7 @@ export function RecordTable({
                       }
                     />
                   </td>
-                  <td>
+                  <td className="px-4 py-2">
                     <select
                       className="w-full px-2 py-1 border border-blue-300 rounded text-sm"
                       value={editing.itemType}
@@ -157,7 +163,7 @@ export function RecordTable({
                       <option value="光锥">光锥</option>
                     </select>
                   </td>
-                  <td>
+                  <td className="px-4 py-2">
                     <input
                       className="w-full px-2 py-1 border border-blue-300 rounded text-sm"
                       value={editing.bannerType}
@@ -171,7 +177,7 @@ export function RecordTable({
                       }
                     />
                   </td>
-                  <td>
+                  <td className="px-4 py-2">
                     <input
                       ref={nameRef}
                       className="w-full px-2 py-1 border border-blue-300 rounded text-sm"
@@ -186,7 +192,7 @@ export function RecordTable({
                       }
                     />
                   </td>
-                  <td>
+                  <td className="px-4 py-2">
                     <input
                       className="w-14 px-2 py-1 border border-blue-300 rounded text-sm text-center"
                       value={editing.starRating}
@@ -202,7 +208,7 @@ export function RecordTable({
                       }
                     />
                   </td>
-                  <td>
+                  <td className="px-4 py-2">
                     <label className="flex items-center gap-1 text-xs cursor-pointer">
                       <input
                         type="checkbox"
@@ -212,7 +218,7 @@ export function RecordTable({
                       {editing.isWon ? '欧' : '歪'}
                     </label>
                   </td>
-                  <td>
+                  <td className="px-4 py-2">
                     <div className="flex gap-1">
                       <button
                         onClick={saveEdit}
@@ -235,15 +241,14 @@ export function RecordTable({
             }
 
             return (
-              <tr
-                key={r.id}
-                className="group grid grid-cols-[1.5fr_0.6fr_0.8fr_2fr_60px_60px_30px] gap-2 px-4 py-2.5 text-sm items-center"
-              >
-                <td className={`${r.recordDate ? 'text-gray-900' : 'text-gray-300 italic'}`}>
+              <tr key={r.id} className="group">
+                <td
+                  className={`px-4 py-2.5 ${r.recordDate ? 'text-gray-900' : 'text-gray-300 italic'}`}
+                >
                   {r.recordDate || '未识别'}
                 </td>
-                <td className="text-gray-500 text-xs">{r.itemType || ''}</td>
-                <td>
+                <td className="px-4 py-2.5 text-gray-500 text-xs">{r.itemType || ''}</td>
+                <td className="px-4 py-2.5">
                   {r.bannerType ? (
                     <span
                       className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${
@@ -261,7 +266,7 @@ export function RecordTable({
                   )}
                 </td>
                 <td
-                  className={`font-medium flex items-center gap-1.5 ${
+                  className={`px-4 py-2.5 font-medium ${
                     r.starRating === 5
                       ? 'text-amber-500'
                       : r.starRating === 4
@@ -271,19 +276,21 @@ export function RecordTable({
                           : 'text-gray-300 italic'
                   }`}
                 >
-                  {r.itemName || '未识别'}
-                  {r.itemName && (
-                    <button
-                      onClick={() => startEdit(r)}
-                      className="opacity-0 group-hover:opacity-40 hover:opacity-100 transition-opacity"
-                      title="编辑"
-                    >
-                      <Pencil className="w-3 h-3" />
-                    </button>
-                  )}
+                  <span className="inline-flex items-center gap-1.5">
+                    {r.itemName || '未识别'}
+                    {r.itemName && (
+                      <button
+                        onClick={() => startEdit(r)}
+                        className="opacity-0 group-hover:opacity-40 hover:opacity-100 transition-opacity"
+                        title="编辑"
+                      >
+                        <Pencil className="w-3 h-3" />
+                      </button>
+                    )}
+                  </span>
                 </td>
                 <td
-                  className={
+                  className={`px-4 py-2.5 ${
                     r.starRating === 5
                       ? 'text-amber-500 font-bold'
                       : r.starRating === 4
@@ -291,11 +298,11 @@ export function RecordTable({
                         : r.starRating > 0
                           ? 'text-gray-400'
                           : 'text-gray-300 italic'
-                  }
+                  }`}
                 >
                   {r.starRating > 0 ? '★'.repeat(r.starRating) : '?'}
                 </td>
-                <td>
+                <td className="px-4 py-2.5">
                   {r.starRating === 5 ? (
                     <button
                       onClick={() => onToggleWon?.(r.id, !r.isWon)}
@@ -311,7 +318,7 @@ export function RecordTable({
                     <span className="text-gray-300 text-xs">-</span>
                   )}
                 </td>
-                <td>
+                <td className="px-4 py-2.5">
                   <button
                     onClick={() => onDelete?.(r.id)}
                     className="text-gray-300 hover:text-red-500 transition-colors text-xs opacity-0 group-hover:opacity-100"

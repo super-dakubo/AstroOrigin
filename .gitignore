@@ -8,7 +8,7 @@ target/
 # Node / pnpm
 node_modules/
 .pnpm-store/
-pnpm-lock.yaml
+# pnpm-lock.yaml is committed for reproducible builds
 
 # Build output
 frontend/dist/
