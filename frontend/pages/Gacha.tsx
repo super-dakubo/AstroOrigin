@@ -5,7 +5,8 @@ import { LuckChart } from '../components/LuckChart'
 import { RecordTable } from '../components/RecordTable'
 import { open } from '@tauri-apps/plugin-dialog'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useMemo } from 'react'
+import type { GachaRecord } from '../lib/types'
 
 interface BannerStats {
   bannerType: string
@@ -23,17 +24,6 @@ interface GachaStats {
   currentPity: number
   avgPullsPerFiveStar: number
   byBanner: BannerStats[]
-}
-
-interface GachaRecord {
-  id: number
-  gameKind: string
-  itemName: string
-  itemType: string
-  bannerType: string
-  starRating: number
-  recordDate: string
-  isWon: boolean
 }
 
 interface GachaRecordsResponse {
@@ -72,22 +62,30 @@ export function Gacha() {
   const [sortBy, setSortBy] = useState<string>('date')
   const [sortOrder, setSortOrder] = useState<string>('desc')
   const [pageSize, setPageSize] = useState<number>(20)
+  type ViewMode = 'panel' | 'list'
+  const [viewMode, setViewMode] = useState<ViewMode>('panel')
 
-  const { data: stats, refetch: refetchStats } = useTauriQuery<GachaStats>('get_gacha_stats', {
+  const {
+    data: stats,
+    refetch: refetchStats,
+    isLoading: statsLoading,
+    isError: statsError
+  } = useTauriQuery<GachaStats>('get_gacha_stats', {
     gameKind: currentGame
   })
-  const { data: recordsResponse, refetch: refetchRecords } = useTauriQuery<GachaRecordsResponse>(
-    'get_gacha_records',
-    {
-      gameKind: currentGame,
-      page,
-      pageSize,
-      banner: bannerTab !== '全部' ? bannerTab : null,
-      starFilter,
-      sortBy,
-      sortOrder
-    }
-  )
+  const {
+    data: recordsResponse,
+    refetch: refetchRecords,
+    isError: recordsError
+  } = useTauriQuery<GachaRecordsResponse>('get_gacha_records', {
+    gameKind: currentGame,
+    page,
+    pageSize,
+    banner: bannerTab !== '全部' ? bannerTab : null,
+    starFilter,
+    sortBy,
+    sortOrder
+  })
 
   // 切游戏时重置所有筛选状态
   useEffect(() => {
@@ -228,20 +226,24 @@ export function Gacha() {
       ?.map((b) => `${b.bannerType.replace('跃迁', '').replace('祈愿', '')} ${b.totalPulls}`)
       .join(' / ') ?? ''
 
-  const chartData = records
-    .filter((r) => r.starRating === 5)
-    .map((r, i, arr) => ({
-      pulls:
-        i === 0
-          ? records.filter((rec) => rec.id < r.id).length + 1
-          : Math.abs(
-              records.filter((rec) => rec.id <= r.id && rec.starRating === 5).length -
-                records.filter((rec) => rec.id <= (arr[i - 1]?.id ?? 0) && rec.starRating === 5)
-                  .length
-            ) || 1,
-      isFiveStar: true,
-      isWon: r.isWon
-    }))
+  const chartData = useMemo(
+    () =>
+      records
+        .filter((r) => r.starRating === 5)
+        .map((r, i, arr) => ({
+          pulls:
+            i === 0
+              ? records.filter((rec) => rec.id < r.id).length + 1
+              : Math.abs(
+                  records.filter((rec) => rec.id <= r.id && rec.starRating === 5).length -
+                    records.filter((rec) => rec.id <= (arr[i - 1]?.id ?? 0) && rec.starRating === 5)
+                      .length
+                ) || 1,
+          isFiveStar: true,
+          isWon: r.isWon
+        })),
+    [records]
+  )
 
   const isImporting = importMutation.isPending || batchImportMutation.isPending
 
@@ -258,7 +260,7 @@ export function Gacha() {
           <button
             onClick={handleSingleImport}
             disabled={isImporting}
-            className="px-4 py-2 text-sm text-white font-medium rounded-lg transition-colors disabled:opacity-50"
+            className="px-4 py-2 text-sm text-gray-900 font-medium rounded-lg transition-colors disabled:opacity-50"
             style={{ background: theme.primary }}
           >
             {isImporting ? '导入中...' : '+ 导入截图'}
@@ -266,7 +268,7 @@ export function Gacha() {
           <button
             onClick={handleBatchImport}
             disabled={isImporting}
-            className="px-4 py-2 text-sm text-white font-medium rounded-lg transition-colors disabled:opacity-50 border-2"
+            className="px-4 py-2 text-sm text-gray-900 font-medium rounded-lg transition-colors disabled:opacity-50 border-2"
             style={{ background: theme.primary, borderColor: theme.primary }}
           >
             {isImporting ? '导入中...' : '+ 批量导入'}
@@ -276,7 +278,7 @@ export function Gacha() {
 
       {/* 卡池 Tabs */}
       <div className="flex gap-1 border-b border-gray-200 pb-2">
-        {BANNER_TABS[currentGame === 'genshin' ? 'genshin' : 'starrail'].map((tab) => (
+        {BANNER_TABS[currentGame].map((tab) => (
           <button
             key={tab}
             onClick={() => {
@@ -294,62 +296,108 @@ export function Gacha() {
         ))}
       </div>
 
+      {/* 加载错误提示 */}
+      {(statsError || recordsError) && (
+        <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-sm text-red-700">
+          数据加载失败，请检查数据库或重试
+        </div>
+      )}
+
       {/* 统计卡片 */}
       <div className="grid grid-cols-4 gap-4">
-        <StatCard
-          label="累计抽数"
-          value={displayStats?.totalPulls?.toLocaleString() ?? '--'}
-          sub={bannerTab === '全部' && bannerBreakdown ? bannerBreakdown : undefined}
-        />
-        <StatCard
-          label="5⭐ 出货"
-          value={displayStats?.fiveStarCount ?? '--'}
-          sub={
-            displayStats
-              ? displayStats.fiveStarCount > 0
-                ? `平均 ${displayStats.avgPullsPerFiveStar.toFixed(1)} 抽`
-                : '暂无出货'
-              : undefined
-          }
-          subColor={theme.primary}
-        />
-        <StatCard
-          label="当前保底"
-          value={displayStats?.currentPity ?? '--'}
-          sub={
-            displayStats
-              ? bannerTab.includes('光锥') || bannerTab.includes('武器')
-                ? `距保底 ${80 - displayStats.currentPity} 抽`
-                : `距保底 ${90 - displayStats.currentPity} 抽`
-              : undefined
-          }
-          subColor="#D4433B"
-        />
-        <StatCard
-          label="歪率"
-          value={
-            stats && stats.fiveStarCount > 0
-              ? bannerTab !== '全部'
-                ? currentBannerStats && currentBannerStats.fiveStarCount > 0
-                  ? `${Math.round((currentBannerStats.lostCount / currentBannerStats.fiveStarCount) * 100)}%`
+        {statsLoading ? (
+          <>
+            {[1, 2, 3, 4].map((i) => (
+              <div key={i} className="bg-white rounded-xl border border-gray-200 p-4 animate-pulse">
+                <div className="h-3 bg-gray-200 rounded w-16 mb-3" />
+                <div className="h-6 bg-gray-200 rounded w-20 mb-2" />
+                <div className="h-3 bg-gray-200 rounded w-24" />
+              </div>
+            ))}
+          </>
+        ) : (
+          <>
+            <StatCard
+              label="累计抽数"
+              value={displayStats?.totalPulls?.toLocaleString() ?? '--'}
+              sub={bannerTab === '全部' && bannerBreakdown ? bannerBreakdown : undefined}
+            />
+            <StatCard
+              label="5⭐ 出货"
+              value={displayStats?.fiveStarCount ?? '--'}
+              sub={
+                displayStats
+                  ? displayStats.fiveStarCount > 0
+                    ? `平均 ${displayStats.avgPullsPerFiveStar.toFixed(1)} 抽`
+                    : '暂无出货'
+                  : undefined
+              }
+              subColor={theme.primary}
+            />
+            <StatCard
+              label="当前保底"
+              value={displayStats?.currentPity ?? '--'}
+              sub={
+                displayStats
+                  ? bannerTab.includes('光锥') || bannerTab.includes('武器')
+                    ? `距保底 ${80 - displayStats.currentPity} 抽`
+                    : `距保底 ${90 - displayStats.currentPity} 抽`
+                  : undefined
+              }
+              subColor="#D4433B"
+            />
+            <StatCard
+              label="歪率"
+              value={
+                stats && stats.fiveStarCount > 0
+                  ? bannerTab !== '全部'
+                    ? currentBannerStats && currentBannerStats.fiveStarCount > 0
+                      ? `${Math.round((currentBannerStats.lostCount / currentBannerStats.fiveStarCount) * 100)}%`
+                      : '--'
+                    : `${Math.round((stats.lostCount / stats.fiveStarCount) * 100)}%`
                   : '--'
-                : `${Math.round((stats.lostCount / stats.fiveStarCount) * 100)}%`
-              : '--'
-          }
-          sub={
-            bannerTab !== '全部'
-              ? currentBannerStats
-                ? `${currentBannerStats.lostCount} / ${currentBannerStats.fiveStarCount}`
-                : undefined
-              : stats
-                ? `${stats.lostCount} / ${stats.fiveStarCount} 歪了`
-                : undefined
-          }
-          subColor="#D4433B"
-        />
+              }
+              sub={
+                bannerTab !== '全部'
+                  ? currentBannerStats
+                    ? `${currentBannerStats.lostCount} / ${currentBannerStats.fiveStarCount}`
+                    : undefined
+                  : stats
+                    ? `${stats.lostCount} / ${stats.fiveStarCount} 歪了`
+                    : undefined
+              }
+              subColor="#D4433B"
+            />
+          </>
+        )}
       </div>
 
-      {/* 进度：默认紧凑百分比，点击展开详情 */}
+      {/* 面板/列表切换 */}
+      <div className="flex justify-center">
+        <div className="inline-flex bg-gray-100 rounded-lg p-0.5">
+          <button
+            onClick={() => setViewMode('panel')}
+            className={`px-6 py-1.5 text-sm rounded-md transition-colors ${
+              viewMode === 'panel'
+                ? 'bg-white shadow-sm font-medium text-gray-900'
+                : 'text-gray-500 hover:text-gray-700'
+            }`}
+          >
+            📊 面板
+          </button>
+          <button
+            onClick={() => setViewMode('list')}
+            className={`px-6 py-1.5 text-sm rounded-md transition-colors ${
+              viewMode === 'list'
+                ? 'bg-white shadow-sm font-medium text-gray-900'
+                : 'text-gray-500 hover:text-gray-700'
+            }`}
+          >
+            📋 列表
+          </button>
+        </div>
+      </div>
+
       {progress && !progress.done && (
         <div className="flex items-center gap-3">
           <div
@@ -400,80 +448,93 @@ export function Gacha() {
         </div>
       )}
 
-      {/* 筛选栏 */}
-      <div className="flex gap-4 items-center flex-wrap">
-        <div className="flex items-center gap-2">
-          <label className="text-xs text-gray-500">星级</label>
-          <select
-            value={starFilter ?? ''}
-            onChange={(e) => {
-              setStarFilter(e.target.value ? Number(e.target.value) : null)
-              setPage(1)
-            }}
-            className="px-2 py-1 border border-gray-200 rounded-lg text-sm bg-white"
-          >
-            <option value="">全部</option>
-            <option value="5">5★</option>
-            <option value="4">4★</option>
-            <option value="3">3★</option>
-          </select>
-        </div>
+      {viewMode === 'panel' ? (
+        <LuckChart records={chartData} />
+      ) : (
+        <>
+          {/* 筛选栏 */}
+          <div className="flex gap-4 items-center flex-wrap">
+            <div className="flex items-center gap-2">
+              <label htmlFor="star-filter" className="text-xs text-gray-500">
+                星级
+              </label>
+              <select
+                id="star-filter"
+                value={starFilter ?? ''}
+                onChange={(e) => {
+                  setStarFilter(e.target.value ? Number(e.target.value) : null)
+                  setPage(1)
+                }}
+                className="px-2 py-1 border border-gray-200 rounded-lg text-sm bg-white"
+              >
+                <option value="">全部</option>
+                <option value="5">5★</option>
+                <option value="4">4★</option>
+                <option value="3">3★</option>
+              </select>
+            </div>
 
-        <div className="flex items-center gap-2">
-          <label className="text-xs text-gray-500">排序</label>
-          <select
-            value={`${sortBy}-${sortOrder}`}
-            onChange={(e) => {
-              const [by, order] = e.target.value.split('-')
-              setSortBy(by)
-              setSortOrder(order)
-              setPage(1)
-            }}
-            className="px-2 py-1 border border-gray-200 rounded-lg text-sm bg-white"
-          >
-            <option value="date-desc">日期 ↓</option>
-            <option value="date-asc">日期 ↑</option>
-            <option value="star-desc">星级 ↓</option>
-            <option value="star-asc">星级 ↑</option>
-          </select>
-        </div>
+            <div className="flex items-center gap-2">
+              <label htmlFor="sort-select" className="text-xs text-gray-500">
+                排序
+              </label>
+              <select
+                id="sort-select"
+                value={`${sortBy}-${sortOrder}`}
+                onChange={(e) => {
+                  const [by, order] = e.target.value.split('-')
+                  setSortBy(by)
+                  setSortOrder(order)
+                  setPage(1)
+                }}
+                className="px-2 py-1 border border-gray-200 rounded-lg text-sm bg-white"
+              >
+                <option value="date-desc">日期 ↓</option>
+                <option value="date-asc">日期 ↑</option>
+                <option value="star-desc">星级 ↓</option>
+                <option value="star-asc">星级 ↑</option>
+              </select>
+            </div>
 
-        <div className="flex items-center gap-2">
-          <label className="text-xs text-gray-500">每页</label>
-          <select
-            value={pageSize}
-            onChange={(e) => {
-              setPageSize(Number(e.target.value))
-              setPage(1)
+            <div className="flex items-center gap-2">
+              <label htmlFor="page-size" className="text-xs text-gray-500">
+                每页
+              </label>
+              <select
+                id="page-size"
+                value={pageSize}
+                onChange={(e) => {
+                  setPageSize(Number(e.target.value))
+                  setPage(1)
+                }}
+                className="px-2 py-1 border border-gray-200 rounded-lg text-sm bg-white"
+              >
+                <option value={20}>20</option>
+                <option value={50}>50</option>
+                <option value={100}>100</option>
+              </select>
+            </div>
+          </div>
+          <RecordTable
+            records={records}
+            total={total}
+            page={page}
+            pageSize={pageSize}
+            onPageChange={setPage}
+            onDelete={async (id) => {
+              await deleteMutation.mutateAsync({ id })
+              refetchStats()
+              refetchRecords()
             }}
-            className="px-2 py-1 border border-gray-200 rounded-lg text-sm bg-white"
-          >
-            <option value={20}>20</option>
-            <option value={50}>50</option>
-            <option value={100}>100</option>
-          </select>
-        </div>
-      </div>
-
-      <LuckChart records={chartData} />
-      <RecordTable
-        records={records}
-        total={total}
-        page={page}
-        pageSize={pageSize}
-        onPageChange={setPage}
-        onDelete={async (id) => {
-          await deleteMutation.mutateAsync({ id })
-          refetchStats()
-          refetchRecords()
-        }}
-        onSave={async (id, data) => {
-          await updateMutation.mutateAsync({ id, ...data })
-          refetchStats()
-          refetchRecords()
-        }}
-        onToggleWon={handleToggleWon}
-      />
+            onSave={async (id, data) => {
+              await updateMutation.mutateAsync({ id, ...data })
+              refetchStats()
+              refetchRecords()
+            }}
+            onToggleWon={handleToggleWon}
+          />
+        </>
+      )}
 
       {error && (
         <div className="fixed bottom-4 right-4 z-50 max-w-md">
