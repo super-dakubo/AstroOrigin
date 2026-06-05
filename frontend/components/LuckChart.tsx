@@ -1,3 +1,4 @@
+import { useMemo } from 'react'
 import { useECharts } from '../hooks/useECharts'
 import { useGameStore } from '../stores/gameStore'
 import type { EChartsOption } from '../lib/echarts'
@@ -9,33 +10,45 @@ interface LuckChartProps {
 export function LuckChart({ records }: LuckChartProps) {
   const theme = useGameStore((s) => s.theme)
 
-  const option: EChartsOption = {
-    tooltip: { trigger: 'item' },
-    grid: { left: 40, right: 16, top: 16, bottom: 24 },
-    xAxis: {
-      type: 'category',
-      data: records.map((_, i) => i + 1),
-      axisLabel: { fontSize: 10, color: '#9ca3af' }
-    },
-    yAxis: {
-      type: 'value',
-      name: '抽数间隔',
-      nameTextStyle: { fontSize: 10, color: '#9ca3af' },
-      axisLabel: { fontSize: 10, color: '#9ca3af' }
-    },
-    series: [
-      {
-        type: 'bar',
-        data: records.map((r) => ({
-          value: r.pulls,
-          itemStyle: {
-            color: r.isFiveStar ? (r.isWon === false ? '#D4433B' : theme.gold) : '#e5e7eb'
-          }
-        })),
-        barMaxWidth: 20
-      }
-    ]
+  if (records.length === 0) {
+    return (
+      <div className="bg-white rounded-xl border border-gray-200 p-4">
+        <div className="text-sm font-semibold text-gray-900 mb-3">欧非曲线</div>
+        <div className="h-48 flex items-center justify-center text-gray-400 text-sm">暂无数据</div>
+      </div>
+    )
   }
+
+  const option: EChartsOption = useMemo(
+    () => ({
+      tooltip: { trigger: 'item' },
+      grid: { left: 40, right: 16, top: 16, bottom: 24 },
+      xAxis: {
+        type: 'category',
+        data: records.map((_, i) => i + 1),
+        axisLabel: { fontSize: 10, color: '#9ca3af' }
+      },
+      yAxis: {
+        type: 'value',
+        name: '抽数间隔',
+        nameTextStyle: { fontSize: 10, color: '#9ca3af' },
+        axisLabel: { fontSize: 10, color: '#9ca3af' }
+      },
+      series: [
+        {
+          type: 'bar',
+          data: records.map((r) => ({
+            value: r.pulls,
+            itemStyle: {
+              color: r.isFiveStar ? (r.isWon === false ? '#D4433B' : theme.gold) : '#e5e7eb'
+            }
+          })),
+          barMaxWidth: 20
+        }
+      ]
+    }),
+    [records, theme.gold]
+  )
 
   const chartRef = useECharts(option)
 

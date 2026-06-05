@@ -120,6 +120,7 @@ export function Gacha() {
   >('update_gacha_record')
 
   const [error, setError] = useState<string | null>(null)
+  const [successMsg, setSuccessMsg] = useState<string | null>(null)
   const [progress, setProgress] = useState<ImportProgress | null>(null)
   const [progressExpanded, setProgressExpanded] = useState(false)
   const [currentFile, setCurrentFile] = useState<string>('')
@@ -162,7 +163,8 @@ export function Gacha() {
       refetchStats()
       refetchRecords()
       setError(null)
-      alert(`导入成功！新增 ${result.imported} 条`)
+      setSuccessMsg(`导入成功！新增 ${result.imported} 条`)
+      setTimeout(() => setSuccessMsg(null), 4000)
     } catch (e) {
       const msg = `导入失败：${e}`
       setError(msg)
@@ -188,7 +190,8 @@ export function Gacha() {
       refetchRecords()
       setError(null)
       setProgress(null)
-      alert(`批量导入完成！新增 ${result.imported} 条`)
+      setSuccessMsg(`批量导入完成！新增 ${result.imported} 条`)
+      setTimeout(() => setSuccessMsg(null), 4000)
     } catch (e) {
       const msg = `批量导入失败：${e}`
       setError(msg)
@@ -555,6 +558,23 @@ export function Gacha() {
               rows={3}
               onClick={(e) => (e.target as HTMLTextAreaElement).select()}
             />
+          </div>
+        </div>
+      )}
+
+      {successMsg && (
+        <div className="fixed bottom-4 right-4 z-50 max-w-md">
+          <div className="bg-green-50 border border-green-200 rounded-lg p-3 shadow-lg">
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-xs font-medium text-green-600">成功</span>
+              <button
+                onClick={() => setSuccessMsg(null)}
+                className="text-green-400 hover:text-green-600 text-xs"
+              >
+                ✕
+              </button>
+            </div>
+            <p className="text-xs text-green-700">{successMsg}</p>
           </div>
         </div>
       )}
