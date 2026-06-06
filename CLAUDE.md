@@ -41,13 +41,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## 常用命令
 
 ```bash
-pnpm tauri dev            # 开发模式（Vite HMR + Rust 热重载）
-cargo check            # Rust 编译检查
-npx tsc --noEmit          # TypeScript 检查
-pnpm build                # 前端构建
-pnpm tauri build          # 打包成 .msi / .exe
-pnpm format               # Prettier 格式化前端代码
-pnpm add <pkg>            # 加前端依赖
+pnpm tauri dev                     # 开发模式（Vite HMR + Rust 热重载）
+cd src-tauri && cargo check        # Rust 编译检查
+cd src-tauri && cargo test         # Rust 测试（含 game 和 gacha 模块单元测试）
+cd src-tauri && cargo clippy       # Rust lint
+npx tsc --noEmit                   # TypeScript 检查
+pnpm build                         # 前端构建
+pnpm tauri build                   # 打包成 .msi / .exe
+pnpm format                        # Prettier 格式化前端代码
+pnpm test                          # Vitest 前端测试
+pnpm add <pkg>                     # 加前端依赖
 ```
 
 ## 关键路径
@@ -60,11 +63,12 @@ frontend/
 ├── components/    # 可复用组件（Layout / StatCard / RecordTable / LuckChart / GameSwitch）
 └── lib/           # 常量、类型（THEMES / ROUTES / GameKind）
 src-tauri/src/
-├── commands/      # Tauri commands（按模块分）
-├── game/          # GameKind 枚举、特征
-├── ocr.rs         # OCR 入口（ocr_image → Vec<OcrWord>）
-├── paddle.rs      # PP-OCRv4 引擎封装
-└── db.rs          # r2d2 连接池 + 表迁移
+├── commands/      # Tauri commands，分模块（gacha.rs 含全部抽卡命令）
+├── game/          # GameKind 枚举（from_str / process_name / features）
+├── ocr.rs         # OCR 入口（ocr_image → Vec<OcrWord>），OnceLock 延迟初始化
+├── paddle.rs      # PP-OCRv4 引擎封装，Mutex 包装 OcrEngine 保证线程安全
+├── error.rs       # TauriResult<T> 类型别名（Result<T, String>）
+└── db.rs          # r2d2 连接池 + 表迁移（gacha_records / playtime_records / screenshot_tags）
 ```
 
 ## 数据流
@@ -79,7 +83,10 @@ React Component → useTauriQuery (react-query) → invoke → Tauri Command
 
 ## 关键设计决策
 
-- **OCR 引擎**：PP-OCRv4（ONNX + tract 纯 Rust 推理），模型 ~15MB 在 `assets/models/`
+- **OCR 引擎**：PP-OCRv4（ONNX + tract 纯 Rust 推理），~15MB 模型在 `assets/models/`
+- **OCR 初始化**：`OnceLock` 延迟加载，`Mutex<OcrEngine>` 保证线程安全（`OcrEngine` 内部用 `RefCell` 非 Send）
+- **模型路径解析**：3 级 fallback（exe 同级 → CARGO_MANIFEST_DIR → 当前目录）
+- **单实例**：`tauri-plugin-single-instance`，二次启动聚焦已有窗口
 - **OCR 管线**：整图 OCR → 坐标聚类行列 → 按表头 X 范围分列 → 模糊匹配 → 去重入库，全部在 `spawn_blocking` 中执行
 - **宽容策略**：OCR 识别不准时保留空字段入库，用户可编辑修复。不因单格识别失败丢弃整行
 - **去重**：UNIQUE 索引 `(game_kind, item_name, record_date)`，`INSERT OR IGNORE`
