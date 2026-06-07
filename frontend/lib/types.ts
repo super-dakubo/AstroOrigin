@@ -8,3 +8,14 @@ export interface GachaRecord {
   recordDate: string
   isWon: boolean
 }
+
+export interface GameConfig {
+  logDirs: string[]
+  apiUrl: string
+  extraParams: string
+  gachaTypes: Record<string, string>
+}
+
+export interface GachaConfig {
+  games: Record<string, GameConfig>
+}

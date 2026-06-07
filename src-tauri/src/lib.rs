@@ -24,6 +24,7 @@ pub fn run() {
                 .app_data_dir()
                 .context("Failed to get app data dir")?;
             std::fs::create_dir_all(&app_dir).context("Failed to create app data dir")?;
+            commands::config::init_config(&app_dir).context("Failed to init gacha config")?;
             let db_path = app_dir.join("companion.db");
             let pool = init_pool(
                 db_path
@@ -38,12 +39,17 @@ pub fn run() {
         })
 
         .invoke_handler(tauri::generate_handler![
+            commands::config::get_gacha_config,
+            commands::config::save_gacha_config,
+            commands::config::reset_gacha_config,
             commands::gacha::get_gacha_records,
             commands::gacha::get_gacha_stats,
             commands::gacha::import_gacha_screenshot,
             commands::gacha::import_gacha_screenshots,
             commands::gacha::delete_gacha_record,
             commands::gacha::update_gacha_record,
+            commands::gacha::import_gacha_log,
+            commands::gacha::get_gacha_chart_records,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

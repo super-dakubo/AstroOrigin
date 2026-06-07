@@ -1,6 +1,9 @@
+import { useMemo, useState } from 'react'
 import { useTauriQuery } from '../hooks/useTauriQuery'
 import { useGameStore } from '../stores/gameStore'
 import { StatCard } from '../components/StatCard'
+import { FiveStarReview } from '../components/FiveStarReview'
+import type { GachaRecord } from '../lib/types'
 
 interface GachaStats {
   totalPulls: number
@@ -10,16 +13,31 @@ interface GachaStats {
   avgPullsPerFiveStar: number
 }
 
+const BANNER_TABS: Record<string, string[]> = {
+  starrail: ['角色活动', '光锥活动', '常驻', '新手'],
+  genshin: ['角色活动', '武器活动', '常驻', '集录']
+}
+
 export function Overview() {
   const currentGame = useGameStore((s) => s.currentGame)
   const theme = useGameStore((s) => s.theme)
+  const [bannerTab, setBannerTab] = useState('角色活动')
 
   const { data: stats, isLoading } = useTauriQuery<GachaStats>('get_gacha_stats', {
     gameKind: currentGame
   })
 
+  const { data: allRecords } = useTauriQuery<GachaRecord[]>('get_gacha_chart_records', {
+    gameKind: currentGame
+  })
+
   const lostRate =
     stats && stats.fiveStarCount > 0 ? Math.round((stats.lostCount / stats.fiveStarCount) * 100) : 0
+
+  const displayRecords = useMemo(
+    () => (allRecords ?? []).filter((r) => r.bannerType.includes(bannerTab)),
+    [allRecords, bannerTab]
+  )
 
   if (isLoading) {
     return (
@@ -72,6 +90,24 @@ export function Overview() {
           subColor="#D4433B"
         />
       </div>
+
+      <div className="flex gap-1 border-b border-gray-200 pb-2">
+        {BANNER_TABS[currentGame].map((tab) => (
+          <button
+            key={tab}
+            onClick={() => setBannerTab(tab)}
+            className={`px-4 py-1.5 text-sm rounded-t-lg transition-colors ${
+              bannerTab === tab
+                ? 'bg-white text-gray-900 font-medium border border-b-0 border-gray-200 -mb-[1px]'
+                : 'text-gray-500 hover:text-gray-700'
+            }`}
+          >
+            {tab}
+          </button>
+        ))}
+      </div>
+
+      <FiveStarReview records={displayRecords} />
     </div>
   )
 }

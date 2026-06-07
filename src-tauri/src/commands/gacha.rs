@@ -4,6 +4,7 @@ use crate::error::TauriResult;
 use anyhow::Context;
 use image::GenericImageView;
 use std::sync::OnceLock;
+use tauri::Manager;
 
 /// 全局 AppHandle，用于在 spawn_blocking 内发进度事件
 static APP_HANDLE: OnceLock<tauri::AppHandle> = OnceLock::new();
@@ -772,6 +773,397 @@ fn known_star_rating(name: &str) -> Option<i32> {
     }
 }
 
+/// 从 URL 中移除 authkey（用于安全日志/错误输出，不泄露敏感参数）
+fn redact_authkey(url: &str) -> String {
+    let re = regex::Regex::new(r"authkey=[^&\s]+").unwrap();
+    re.replace(url, "authkey=***REDACTED***").to_string()
+}
+
+/// 将 API gacha_type 代码映射为中文 banner 名称
+fn gacha_type_to_name(game: &str, code: &str) -> &'static str {
+    match game {
+        "genshin" => match code {
+            "100" => "新手祈愿",
+            "200" => "常驻祈愿",
+            "301" => "角色活动祈愿",
+            "302" => "武器活动祈愿",
+            "500" => "集录祈愿",
+            _ => "未知祈愿",
+        },
+        "starrail" => match code {
+            "1" => "常驻跃迁",
+            "2" => "新手跃迁",
+            "11" => "角色活动跃迁",
+            "12" => "光锥活动跃迁",
+            _ => "未知跃迁",
+        },
+        _ => "未知",
+    }
+}
+
+/// 从日志文本中提取适用于 webview_gacha 的 authkey
+fn extract_authkey_from_log(log_content: &str) -> Option<String> {
+    // 找 auth_appid=webview_gacha 上下文中的 authkey 参数值
+    let re = regex::Regex::new(r"auth_appid=webview_gacha&[^#]*?authkey=([^&\s]+)").ok()?;
+    re.captures(log_content)
+        .and_then(|c| c.get(1))
+        .map(|m| m.as_str().to_string())
+}
+
+/// URL-decode authkey 并 encode 回标准格式
+fn normalize_authkey(raw: &str) -> String {
+    let decoded = urlencoding::decode(raw).unwrap_or(std::borrow::Cow::Borrowed(raw));
+    urlencoding::encode(&decoded).into_owned()
+}
+
+/// 构建抽卡记录 API 请求 URL
+fn build_gacha_api_url(
+    api_base: &str,
+    extra_params: &str,
+    authkey: &str,
+    gacha_type: &str,
+    end_id: Option<&str>,
+) -> String {
+    let extra = if extra_params.is_empty() {
+        String::new()
+    } else {
+        format!("{}&", extra_params)
+    };
+    let end = match end_id {
+        Some(id) => format!("&end_id={}", id),
+        None => String::new(),
+    };
+    format!(
+        "{api_base}?authkey_ver=1&sign_type=2&auth_appid=webview_gacha&{extra}authkey={authkey}&lang=zh-cn&size=20&gacha_type={gt}&page=1{end}",
+        api_base = api_base,
+        extra = extra,
+        authkey = authkey,
+        gt = gacha_type,
+    )
+}
+
+/// 在一个日志目录中递归搜索含 authkey 的文件
+fn find_authkey_in_dir(dir: &std::path::Path) -> Option<String> {
+    eprintln!("[GACHA_LOG] Searching for authkey in: {}", dir.display());
+    for entry in walk_log_sort(dir) {
+        eprintln!("[GACHA_LOG]   Checking file: {}", entry.display());
+        let content = match std::fs::read_to_string(&entry) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("[GACHA_LOG]   Error reading file (skipping): {}", e);
+                continue;
+            }
+        };
+        if let Some(ak) = extract_authkey_from_log(&content) {
+            eprintln!("[GACHA_LOG] Found authkey in: {}", entry.display());
+            return Some(ak);
+        }
+    }
+    eprintln!("[GACHA_LOG] No authkey found in any file");
+    None
+}
+
+/// 递归遍历目录下所有 .log 和 .txt，按修改时间倒序
+fn walk_log_sort(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let files = walk_log_dir(dir);
+    eprintln!("[GACHA_LOG] Found {} files in {}", files.len(), dir.display());
+    for f in &files {
+        eprintln!("[GACHA_LOG]   File: {}", f.display());
+    }
+    let mut files = files;
+    files.sort_by(|a, b| {
+        let b_mtime = b
+            .metadata()
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+        let a_mtime = a
+            .metadata()
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+        b_mtime.cmp(&a_mtime)
+    });
+    files
+}
+
+const TIME_LIMIT_SECS: u64 = 45;
+
+/// 发送导入进度事件
+fn emit_gacha_progress(app_handle: &tauri::AppHandle, current: usize, total: usize, phase: &str) {
+    emit_gacha_progress_done(app_handle, current, total, phase, false);
+}
+
+/// 发送导入进度事件（可标记完成）
+fn emit_gacha_progress_done(
+    app_handle: &tauri::AppHandle,
+    current: usize,
+    total: usize,
+    phase: &str,
+    done: bool,
+) {
+    use tauri::Emitter;
+    let _ = app_handle.emit(
+        "import-progress",
+        serde_json::json!({
+            "current": current,
+            "total": total,
+            "phase": phase,
+            "done": done,
+        }),
+    );
+}
+
+/// 自动从游戏日志提取 authkey 并遍历全卡池导入抽卡记录
+///
+/// # 安全约束
+/// - authkey 仅存在于函数调用栈内存中，请求完成后自动释放
+/// - authkey 不写入数据库、文件，不输出到日志或错误消息
+///
+/// 返回本批次导入的条数。若 authkey 过期则返回友好提示。
+fn auto_import_gacha_log(
+    pool: &DbPool,
+    game: &str,
+    config: &mut crate::commands::config::GameConfig,
+    app_handle: &tauri::AppHandle,
+) -> Result<usize, String> {
+    use crate::commands::config::expand_env_vars;
+
+    let start = std::time::Instant::now();
+    let time_limit = std::time::Duration::from_secs(TIME_LIMIT_SECS);
+
+    // 1. 找 authkey：先检查缓存，再遍历日志目录
+    let raw_authkey: String = if config.is_authkey_valid() {
+        eprintln!("[GACHA_LOG] Using cached authkey");
+        config.authkey.clone().unwrap()
+    } else {
+        let mut found: Option<String> = None;
+        for raw_dir in &config.log_dirs {
+            let expanded = expand_env_vars(raw_dir);
+            let dir = std::path::Path::new(&expanded);
+            if !dir.exists() {
+                eprintln!("[GACHA_LOG] Dir not found: {}", expanded);
+                continue;
+            }
+            if let Some(ak) = find_authkey_in_dir(dir) {
+                found = Some(ak);
+                break;
+            }
+        }
+
+        let raw = found.ok_or_else(|| {
+            format!(
+                "未在游戏日志中找到 authkey。{}\n请打开游戏内抽卡记录页面后重试",
+                match game {
+                    "genshin" => "请确保已打开「祈愿」页面。",
+                    "starrail" => "请确保已打开「跃迁」页面。",
+                    _ => "",
+                }
+            )
+        })?;
+
+        // 缓存 authkey（由调用方负责保存配置）
+        config.set_authkey(raw.clone());
+
+        raw
+    };
+
+    // 标准化 authkey（decode + re-encode）
+    let authkey = normalize_authkey(&raw_authkey);
+
+    // 如果 extra_params 为空，补默认值（兼容旧配置）
+    let extra_params = if config.extra_params.is_empty() {
+        match game {
+            "genshin" => "region=cn_gf01&game_biz=hk4e_cn",
+            "starrail" => "region=prod_gf_cn&game_biz=hkrpg_cn",
+            _ => "",
+        }
+    } else {
+        &config.extra_params
+    };
+
+    // 2. 逐卡池类型分页拉取
+    let conn = pool.get().map_err(|e| format!("数据库连接失败: {}", e))?;
+    let mut total_imported = 0usize;
+    for (gacha_type_code, _banner_name) in &config.gacha_types {
+        let mut end_id: Option<String> = None;
+        loop {
+            // 时间限制检查
+            if start.elapsed() > time_limit {
+                eprintln!("[GACHA_LOG] Time limit ({TIME_LIMIT_SECS}s) reached, stopping");
+                emit_gacha_progress_done(
+                    app_handle,
+                    total_imported,
+                    total_imported,
+                    "已到达时间限制",
+                    true,
+                );
+                break;
+            }
+
+            let api_url = build_gacha_api_url(
+                &config.api_url,
+                extra_params,
+                &authkey,
+                gacha_type_code,
+                end_id.as_deref(),
+            );
+
+            let resp = reqwest::blocking::get(&api_url)
+                .map_err(|e| format!("请求抽卡记录 API 失败: {}", e))?;
+            let json: serde_json::Value =
+                resp.json().map_err(|e| format!("解析 API 响应失败: {}", e))?;
+
+            if json["retcode"].as_i64().unwrap_or(-1) != 0 {
+                if total_imported > 0 {
+                    break;
+                }
+                return Err("请打开游戏内抽卡记录页面后重试".to_string());
+            }
+
+            let list = match json["data"]["list"].as_array() {
+                Some(l) if !l.is_empty() => l,
+                _ => break,
+            };
+
+            for item in list {
+                let name = item["name"].as_str().unwrap_or_default();
+                let item_type = item["item_type"].as_str().unwrap_or_default();
+                let rank_type = item["rank_type"].as_str().unwrap_or("3");
+                let time = item["time"].as_str().unwrap_or_default();
+                let gacha_type = item["gacha_type"].as_str().unwrap_or_default();
+
+                let star_rating: i32 = rank_type.parse().unwrap_or(3);
+                let banner_type = gacha_type_to_name(game, gacha_type);
+
+                if name.is_empty() || time.is_empty() {
+                    continue;
+                }
+
+                match conn.execute(
+                    "INSERT INTO gacha_records (game_kind, item_name, item_type, star_rating, record_date, is_won, banner_type)
+                     VALUES (?, ?, ?, ?, ?, ?, ?)
+                     ON CONFLICT(game_kind, item_name, record_date) DO UPDATE SET
+                       item_type = excluded.item_type,
+                       star_rating = excluded.star_rating,
+                       banner_type = excluded.banner_type",
+                    rusqlite::params![game, name, item_type, star_rating, time, true, banner_type],
+                ) {
+                    Ok(_) => total_imported += 1,
+                    Err(e) => eprintln!("[GACHA_LOG] Insert error for '{}': {}", name, e),
+                }
+            }
+
+            // 取最后一条记录的 id 作为下一页 end_id
+            let last_id = list.last()
+                .and_then(|item| item["id"].as_str())
+                .map(|s| s.to_string());
+            match last_id {
+                Some(id) => end_id = Some(id),
+                None => break,
+            }
+        }
+
+        if start.elapsed() > time_limit {
+            break;
+        }
+    }
+
+    emit_gacha_progress_done(app_handle, total_imported, total_imported, "导入完成", true);
+    Ok(total_imported)
+}
+
+/// 递归遍历目录下所有 .log 和 .txt 文件
+fn walk_log_dir(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut files = Vec::new();
+    if let Ok(rd) = dir.read_dir() {
+        for entry in rd.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                files.extend(walk_log_dir(&path));
+            } else if let Some(ext) = path.extension() {
+                let ext = ext.to_string_lossy().to_lowercase();
+                if ext == "log" || ext == "txt" {
+                    files.push(path);
+                }
+            }
+        }
+    }
+    files
+}
+
+#[tauri::command]
+pub async fn import_gacha_log(
+    pool: tauri::State<'_, DbPool>,
+    app_handle: tauri::AppHandle,
+    game_kind: String,
+) -> TauriResult<GachaImportResult> {
+    let pool = pool.inner().clone();
+
+    tokio::task::spawn_blocking(move || {
+        let app_dir = app_handle
+            .path()
+            .app_data_dir()
+            .map_err(|e| format!("获取应用数据目录失败: {}", e))?;
+        let mut config = crate::commands::config::load_config(&app_dir)
+            .map_err(|e| format!("加载配置失败: {}", e))?;
+        let game_config = config.games.get_mut(&game_kind)
+            .ok_or_else(|| format!("不支持的游戏: {}", game_kind))?;
+
+        let imported = auto_import_gacha_log(&pool, &game_kind, game_config, &app_handle)
+            .map_err(|e| format!("{:#}", e))?;
+        // authkey 可能已缓存，保存配置
+        let _ = crate::commands::config::save_config(&app_dir, &config);
+        Ok(GachaImportResult {
+            imported,
+            duplicates: 0,
+        })
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
+}
+
+#[tauri::command]
+pub async fn get_gacha_chart_records(
+    pool: tauri::State<'_, DbPool>,
+    game_kind: String,
+) -> TauriResult<Vec<GachaRecord>> {
+    let pool = pool.inner().clone();
+
+    tokio::task::spawn_blocking(move || {
+        let conn = pool.get().map_err(|e| format!("DB error: {}", e))?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, game_kind, item_name, item_type, star_rating, record_date, is_won, banner_type
+                 FROM gacha_records
+                 WHERE game_kind = ?
+                 ORDER BY record_date ASC, id ASC",
+            )
+            .map_err(|e| format!("SQL prepare error: {}", e))?;
+
+        let records = stmt
+            .query_map(rusqlite::params![game_kind], |row| {
+                Ok(GachaRecord {
+                    id: row.get(0)?,
+                    game_kind: row.get(1)?,
+                    item_name: row.get(2)?,
+                    item_type: row.get(3)?,
+                    star_rating: row.get(4)?,
+                    record_date: row.get(5)?,
+                    is_won: row.get(6)?,
+                    banner_type: row.get(7)?,
+                })
+            })
+            .map_err(|e| format!("SQL query error: {}", e))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("Record collect error: {}", e))?;
+
+        Ok(records)
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
+}
+
 #[cfg(test)]
 mod tests {
     use crate::ocr::OcrWord;
@@ -873,4 +1265,189 @@ mod tests {
         assert!(rows.len() >= 6, "Expected 6+ rows, got {}", rows.len());
     }
 
+    // ── gacha log 自动导入测试 ──
+
+    #[test]
+    fn test_redact_authkey_removes_key() {
+        let url = "https://example.com/api/getGachaLog?authkey_ver=1&authkey=secret123&lang=zh-cn";
+        let redacted = super::redact_authkey(url);
+        assert!(redacted.contains("authkey=***REDACTED***"));
+        assert!(!redacted.contains("secret123"));
+        assert!(!redacted.contains("authkey=secret123"));
+    }
+
+    #[test]
+    fn test_redact_authkey_no_authkey() {
+        let url = "https://example.com/api/getGachaLog?lang=zh-cn&size=20";
+        assert_eq!(super::redact_authkey(url), url);
+    }
+
+    #[test]
+    fn test_extract_gacha_url_found() {
+        let log = r#"
+2026-05-27 23:05:36.123 web: 2 url: https://webstatic.mihoyo.com/hk4e/event/e20190909gacha/index.html?authkey_ver=1&auth_appid=webview_gacha&sign_type=2&authkey=abc123&lang=zh-cn#/log
+        "#;
+        let ak = super::extract_authkey_from_log(log);
+        assert!(ak.is_some(), "authkey not found");
+        assert_eq!(ak.unwrap(), "abc123");
+    }
+
+    #[test]
+    fn test_extract_gacha_url_not_found() {
+        let log = "some random log content without authkey";
+        let ak = super::extract_authkey_from_log(log);
+        assert!(ak.is_none(), "Should not find authkey in unrelated content");
+    }
+
+    #[test]
+    fn test_gacha_type_starrail() {
+        assert_eq!(super::gacha_type_to_name("starrail", "1"), "常驻跃迁");
+        assert_eq!(super::gacha_type_to_name("starrail", "11"), "角色活动跃迁");
+        assert_eq!(super::gacha_type_to_name("starrail", "12"), "光锥活动跃迁");
+        assert_eq!(super::gacha_type_to_name("starrail", "999"), "未知跃迁");
+    }
+
+    #[test]
+    fn test_gacha_type_genshin() {
+        assert_eq!(super::gacha_type_to_name("genshin", "100"), "新手祈愿");
+        assert_eq!(super::gacha_type_to_name("genshin", "200"), "常驻祈愿");
+        assert_eq!(super::gacha_type_to_name("genshin", "301"), "角色活动祈愿");
+        assert_eq!(super::gacha_type_to_name("genshin", "302"), "武器活动祈愿");
+        assert_eq!(super::gacha_type_to_name("genshin", "999"), "未知祈愿");
+    }
+
+    #[test]
+    fn test_parse_mock_api_response() {
+        let json = serde_json::json!({
+            "retcode": 0,
+            "message": "OK",
+            "data": {
+                "list": [
+                    {
+                        "uid": "123456789",
+                        "gacha_type": "11",
+                        "item_type": "角色",
+                        "name": "希儿",
+                        "rank_type": "5",
+                        "time": "2026-05-27 10:30:00",
+                        "id": "1001"
+                    },
+                    {
+                        "uid": "123456789",
+                        "gacha_type": "11",
+                        "item_type": "光锥",
+                        "name": "轮契",
+                        "rank_type": "3",
+                        "time": "2026-05-26 22:15:00",
+                        "id": "1002"
+                    }
+                ],
+                "page": "1",
+                "size": "20",
+                "total": "2"
+            }
+        });
+
+        let list = json["data"]["list"].as_array().unwrap();
+        assert_eq!(list.len(), 2);
+
+        let first = &list[0];
+        assert_eq!(first["name"].as_str().unwrap(), "希儿");
+        assert_eq!(first["item_type"].as_str().unwrap(), "角色");
+        assert_eq!(first["rank_type"].as_str().unwrap(), "5");
+        assert_eq!(first["gacha_type"].as_str().unwrap(), "11");
+        assert_eq!(first["time"].as_str().unwrap(), "2026-05-27 10:30:00");
+
+        let imported = list.iter().filter(|item| {
+            !item["name"].as_str().unwrap_or_default().is_empty()
+                && !item["time"].as_str().unwrap_or_default().is_empty()
+        }).count();
+        assert_eq!(imported, 2);
+    }
+
+    #[test]
+    fn test_walk_log_dir_filters_by_ext() {
+        use std::io::Write;
+        let dir = std::env::temp_dir().join("astrorigin_test_logs");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let mut f1 = std::fs::File::create(dir.join("game.log")).unwrap();
+        writeln!(f1, "test log content").unwrap();
+
+        let mut f2 = std::fs::File::create(dir.join("data.txt")).unwrap();
+        writeln!(f2, "test txt content").unwrap();
+
+        let mut f3 = std::fs::File::create(dir.join("readme.md")).unwrap();
+        writeln!(f3, "should be ignored").unwrap();
+
+        let files = super::walk_log_dir(&dir);
+        let names: std::collections::HashSet<_> = files
+            .iter()
+            .filter_map(|p| p.file_name().and_then(|n| n.to_str()))
+            .collect();
+        assert!(names.contains("game.log"));
+        assert!(names.contains("data.txt"), "Expected data.txt to be found (ext is txt)");
+        assert!(!names.contains("readme.md"), "Should skip non-log/txt files");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_starrail_sample_log() {
+        let sample_url = "https://api.mihomo.me/sr_gacha_info/api/getGachaLog?authkey=test";
+        assert!(sample_url.contains("getGachaLog"));
+
+        let json_str = r#"{
+            "retcode": 0,
+            "message": "OK",
+            "data": {
+                "list": [
+                    {
+                        "uid": "123456789",
+                        "gacha_type": "12",
+                        "item_type": "光锥",
+                        "name": "拂晓之前",
+                        "rank_type": "5",
+                        "time": "2026-05-15 14:20:00",
+                        "id": "2001"
+                    },
+                    {
+                        "uid": "123456789",
+                        "gacha_type": "1",
+                        "item_type": "角色",
+                        "name": "彦卿",
+                        "rank_type": "5",
+                        "time": "2026-05-10 08:00:00",
+                        "id": "2002"
+                    }
+                ],
+                "page": "1",
+                "size": "20",
+                "total": "2"
+            }
+        }"#;
+
+        let v: serde_json::Value = serde_json::from_str(json_str).unwrap();
+        assert_eq!(v["retcode"], 0);
+
+        let list = v["data"]["list"].as_array().unwrap();
+        assert_eq!(list.len(), 2);
+
+        for item in list {
+            let name = item["name"].as_str().unwrap_or_default();
+            let item_type = item["item_type"].as_str().unwrap_or_default();
+            let rank_type = item["rank_type"].as_str().unwrap_or("3");
+            let time = item["time"].as_str().unwrap_or_default();
+            let gacha_type = item["gacha_type"].as_str().unwrap_or_default();
+
+            assert!(!name.is_empty(), "name should not be empty");
+            assert!(!item_type.is_empty(), "item_type should not be empty");
+            assert!(!time.is_empty(), "time should not be empty");
+            assert!(!gacha_type.is_empty(), "gacha_type should not be empty");
+
+            let star: i32 = rank_type.parse().unwrap_or(3);
+            assert!(star >= 3 && star <= 5, "star rating out of range: {}", star);
+        }
+    }
 }

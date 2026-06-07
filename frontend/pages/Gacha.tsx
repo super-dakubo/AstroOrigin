@@ -1,11 +1,10 @@
 import { useTauriQuery, useTauriMutation } from '../hooks/useTauriQuery'
 import { useGameStore } from '../stores/gameStore'
 import { StatCard } from '../components/StatCard'
-import { LuckChart } from '../components/LuckChart'
 import { RecordTable } from '../components/RecordTable'
 import { open } from '@tauri-apps/plugin-dialog'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
-import { useState, useEffect, useRef, useMemo } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import type { GachaRecord } from '../lib/types'
 
 interface BannerStats {
@@ -48,8 +47,8 @@ const PHASE_LABELS: Record<string, string> = {
 }
 
 const BANNER_TABS: Record<string, string[]> = {
-  starrail: ['全部', '角色活动', '光锥活动', '常驻'],
-  genshin: ['全部', '角色活动', '武器活动', '常驻']
+  starrail: ['全部', '角色活动', '光锥活动', '常驻', '新手'],
+  genshin: ['全部', '角色活动', '武器活动', '常驻', '集录']
 }
 
 export function Gacha() {
@@ -62,8 +61,6 @@ export function Gacha() {
   const [sortBy, setSortBy] = useState<string>('date')
   const [sortOrder, setSortOrder] = useState<string>('desc')
   const [pageSize, setPageSize] = useState<number>(20)
-  type ViewMode = 'panel' | 'list'
-  const [viewMode, setViewMode] = useState<ViewMode>('panel')
 
   const {
     data: stats,
@@ -118,6 +115,10 @@ export function Gacha() {
       isWon: boolean
     }
   >('update_gacha_record')
+  const importGachaLogMutation = useTauriMutation<
+    { imported: number; duplicates: number },
+    { gameKind: string }
+  >('import_gacha_log')
 
   const [error, setError] = useState<string | null>(null)
   const [successMsg, setSuccessMsg] = useState<string | null>(null)
@@ -200,6 +201,23 @@ export function Gacha() {
     }
   }
 
+  const handleRefreshFromLog = async () => {
+    try {
+      const result = await importGachaLogMutation.mutateAsync({
+        gameKind: currentGame
+      })
+      refetchStats()
+      refetchRecords()
+      setError(null)
+      setSuccessMsg(`自动导入完成！新增 ${result.imported} 条`)
+      setTimeout(() => setSuccessMsg(null), 4000)
+    } catch (e) {
+      const msg = `自动导入失败：${e}`
+      setError(msg)
+      console.error(msg)
+    }
+  }
+
   const handleToggleWon = async (id: number, newIsWon: boolean) => {
     const record = records.find((r) => r.id === id)
     if (!record) return
@@ -222,33 +240,16 @@ export function Gacha() {
   const currentBannerStats =
     bannerTab !== '全部' ? stats?.byBanner?.find((b) => b.bannerType.includes(bannerTab)) : null
 
-  const displayStats = currentBannerStats || stats
+  // 指定卡池但无匹配时不留空也不回退总数，保持与列表一致
+  const displayStats = bannerTab !== '全部' ? (currentBannerStats ?? null) : stats
 
   const bannerBreakdown =
     stats?.byBanner
       ?.map((b) => `${b.bannerType.replace('跃迁', '').replace('祈愿', '')} ${b.totalPulls}`)
       .join(' / ') ?? ''
 
-  const chartData = useMemo(
-    () =>
-      records
-        .filter((r) => r.starRating === 5)
-        .map((r, i, arr) => ({
-          pulls:
-            i === 0
-              ? records.filter((rec) => rec.id < r.id).length + 1
-              : Math.abs(
-                  records.filter((rec) => rec.id <= r.id && rec.starRating === 5).length -
-                    records.filter((rec) => rec.id <= (arr[i - 1]?.id ?? 0) && rec.starRating === 5)
-                      .length
-                ) || 1,
-          isFiveStar: true,
-          isWon: r.isWon
-        })),
-    [records]
-  )
-
-  const isImporting = importMutation.isPending || batchImportMutation.isPending
+  const isImporting =
+    importMutation.isPending || batchImportMutation.isPending || importGachaLogMutation.isPending
 
   return (
     <div className="space-y-4">
@@ -275,6 +276,13 @@ export function Gacha() {
             style={{ background: theme.primary, borderColor: theme.primary }}
           >
             {isImporting ? '导入中...' : '+ 批量导入'}
+          </button>
+          <button
+            onClick={handleRefreshFromLog}
+            disabled={isImporting}
+            className="px-4 py-2 text-sm text-gray-500 font-medium rounded-lg border border-gray-300 hover:bg-gray-50 transition-colors disabled:opacity-50"
+          >
+            {importGachaLogMutation.isPending ? '刷新中...' : '🔄 刷新'}
           </button>
         </div>
       </div>
@@ -375,32 +383,6 @@ export function Gacha() {
         )}
       </div>
 
-      {/* 面板/列表切换 */}
-      <div className="flex justify-center">
-        <div className="inline-flex bg-gray-100 rounded-lg p-0.5">
-          <button
-            onClick={() => setViewMode('panel')}
-            className={`px-6 py-1.5 text-sm rounded-md transition-colors ${
-              viewMode === 'panel'
-                ? 'bg-white shadow-sm font-medium text-gray-900'
-                : 'text-gray-500 hover:text-gray-700'
-            }`}
-          >
-            📊 面板
-          </button>
-          <button
-            onClick={() => setViewMode('list')}
-            className={`px-6 py-1.5 text-sm rounded-md transition-colors ${
-              viewMode === 'list'
-                ? 'bg-white shadow-sm font-medium text-gray-900'
-                : 'text-gray-500 hover:text-gray-700'
-            }`}
-          >
-            📋 列表
-          </button>
-        </div>
-      </div>
-
       {progress && !progress.done && (
         <div className="flex items-center gap-3">
           <div
@@ -418,7 +400,7 @@ export function Gacha() {
                   stroke="#3b82f6"
                   strokeWidth="3"
                   strokeLinecap="round"
-                  strokeDasharray={`${(progress.current / progress.total) * 87.96} 87.96`}
+                  strokeDasharray={`${progress.total > 0 ? (progress.current / progress.total) * 87.96 : 0} 87.96`}
                 />
               </svg>
               <span className="absolute inset-0 flex items-center justify-center text-[10px] font-semibold text-blue-600">
@@ -443,7 +425,9 @@ export function Gacha() {
               <div className="w-full bg-blue-200 rounded-full h-2">
                 <div
                   className="bg-blue-500 h-2 rounded-full transition-all duration-200"
-                  style={{ width: `${(progress.current / progress.total) * 100}%` }}
+                  style={{
+                    width: `${progress.total > 0 ? (progress.current / progress.total) * 100 : 0}%`
+                  }}
                 />
               </div>
             </div>
@@ -451,93 +435,89 @@ export function Gacha() {
         </div>
       )}
 
-      {viewMode === 'panel' ? (
-        <LuckChart records={chartData} />
-      ) : (
-        <>
-          {/* 筛选栏 */}
-          <div className="flex gap-4 items-center flex-wrap">
-            <div className="flex items-center gap-2">
-              <label htmlFor="star-filter" className="text-xs text-gray-500">
-                星级
-              </label>
-              <select
-                id="star-filter"
-                value={starFilter ?? ''}
-                onChange={(e) => {
-                  setStarFilter(e.target.value ? Number(e.target.value) : null)
-                  setPage(1)
-                }}
-                className="px-2 py-1 border border-gray-200 rounded-lg text-sm bg-white"
-              >
-                <option value="">全部</option>
-                <option value="5">5★</option>
-                <option value="4">4★</option>
-                <option value="3">3★</option>
-              </select>
-            </div>
-
-            <div className="flex items-center gap-2">
-              <label htmlFor="sort-select" className="text-xs text-gray-500">
-                排序
-              </label>
-              <select
-                id="sort-select"
-                value={`${sortBy}-${sortOrder}`}
-                onChange={(e) => {
-                  const [by, order] = e.target.value.split('-')
-                  setSortBy(by)
-                  setSortOrder(order)
-                  setPage(1)
-                }}
-                className="px-2 py-1 border border-gray-200 rounded-lg text-sm bg-white"
-              >
-                <option value="date-desc">日期 ↓</option>
-                <option value="date-asc">日期 ↑</option>
-                <option value="star-desc">星级 ↓</option>
-                <option value="star-asc">星级 ↑</option>
-              </select>
-            </div>
-
-            <div className="flex items-center gap-2">
-              <label htmlFor="page-size" className="text-xs text-gray-500">
-                每页
-              </label>
-              <select
-                id="page-size"
-                value={pageSize}
-                onChange={(e) => {
-                  setPageSize(Number(e.target.value))
-                  setPage(1)
-                }}
-                className="px-2 py-1 border border-gray-200 rounded-lg text-sm bg-white"
-              >
-                <option value={20}>20</option>
-                <option value={50}>50</option>
-                <option value={100}>100</option>
-              </select>
-            </div>
+      <>
+        {/* 筛选栏 */}
+        <div className="flex gap-4 items-center flex-wrap">
+          <div className="flex items-center gap-2">
+            <label htmlFor="star-filter" className="text-xs text-gray-500">
+              星级
+            </label>
+            <select
+              id="star-filter"
+              value={starFilter ?? ''}
+              onChange={(e) => {
+                setStarFilter(e.target.value ? Number(e.target.value) : null)
+                setPage(1)
+              }}
+              className="px-2 py-1 border border-gray-200 rounded-lg text-sm bg-white"
+            >
+              <option value="">全部</option>
+              <option value="5">5★</option>
+              <option value="4">4★</option>
+              <option value="3">3★</option>
+            </select>
           </div>
-          <RecordTable
-            records={records}
-            total={total}
-            page={page}
-            pageSize={pageSize}
-            onPageChange={setPage}
-            onDelete={async (id) => {
-              await deleteMutation.mutateAsync({ id })
-              refetchStats()
-              refetchRecords()
-            }}
-            onSave={async (id, data) => {
-              await updateMutation.mutateAsync({ id, ...data })
-              refetchStats()
-              refetchRecords()
-            }}
-            onToggleWon={handleToggleWon}
-          />
-        </>
-      )}
+
+          <div className="flex items-center gap-2">
+            <label htmlFor="sort-select" className="text-xs text-gray-500">
+              排序
+            </label>
+            <select
+              id="sort-select"
+              value={`${sortBy}-${sortOrder}`}
+              onChange={(e) => {
+                const [by, order] = e.target.value.split('-')
+                setSortBy(by)
+                setSortOrder(order)
+                setPage(1)
+              }}
+              className="px-2 py-1 border border-gray-200 rounded-lg text-sm bg-white"
+            >
+              <option value="date-desc">日期 ↓</option>
+              <option value="date-asc">日期 ↑</option>
+              <option value="star-desc">星级 ↓</option>
+              <option value="star-asc">星级 ↑</option>
+            </select>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <label htmlFor="page-size" className="text-xs text-gray-500">
+              每页
+            </label>
+            <select
+              id="page-size"
+              value={pageSize}
+              onChange={(e) => {
+                setPageSize(Number(e.target.value))
+                setPage(1)
+              }}
+              className="px-2 py-1 border border-gray-200 rounded-lg text-sm bg-white"
+            >
+              <option value={20}>20</option>
+              <option value={50}>50</option>
+              <option value={100}>100</option>
+            </select>
+          </div>
+        </div>
+        <RecordTable
+          records={records}
+          total={total}
+          page={page}
+          pageSize={pageSize}
+          onPageChange={setPage}
+          onDelete={async (id) => {
+            await deleteMutation.mutateAsync({ id })
+            refetchStats()
+            refetchRecords()
+          }}
+          onSave={async (id, data) => {
+            await updateMutation.mutateAsync({ id, ...data })
+            refetchStats()
+            refetchRecords()
+          }}
+          onToggleWon={handleToggleWon}
+        />
+      </>
 
       {error && (
         <div className="fixed bottom-4 right-4 z-50 max-w-md">

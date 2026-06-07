@@ -33,5 +33,6 @@ export const ROUTES = {
   OVERVIEW: '/',
   GACHA: '/gacha',
   PLAYTIME: '/playtime',
-  SCREENSHOTS: '/screenshots' // trailing comma
+  SCREENSHOTS: '/screenshots',
+  SETTINGS: '/settings'
 } as const

@@ -215,7 +215,7 @@ export function RecordTable({
                         checked={editing.isWon}
                         onChange={(e) => setEditing({ ...editing, isWon: e.target.checked })}
                       />
-                      {editing.isWon ? '欧' : '歪'}
+                      {editing.isWon ? '没歪' : '歪了'}
                     </label>
                   </td>
                   <td className="px-4 py-2">
@@ -303,7 +303,10 @@ export function RecordTable({
                   {r.starRating > 0 ? '★'.repeat(r.starRating) : '?'}
                 </td>
                 <td className="px-4 py-2.5">
-                  {r.starRating === 5 ? (
+                  {r.starRating === 5 &&
+                  (r.bannerType.includes('角色活动') ||
+                    r.bannerType.includes('武器活动') ||
+                    r.bannerType.includes('光锥活动')) ? (
                     <button
                       onClick={() => onToggleWon?.(r.id, !r.isWon)}
                       className={`px-2 py-0.5 rounded text-xs font-medium cursor-pointer transition-colors ${
@@ -312,7 +315,7 @@ export function RecordTable({
                           : 'bg-red-50 text-red-500 hover:bg-red-100'
                       }`}
                     >
-                      {r.isWon ? '欧 ✓' : '歪了'}
+                      {r.isWon ? '没歪' : '歪了'}
                     </button>
                   ) : (
                     <span className="text-gray-300 text-xs">-</span>
